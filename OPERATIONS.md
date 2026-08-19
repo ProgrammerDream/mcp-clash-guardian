@@ -3,20 +3,20 @@
 ## Daily commands
 
 ```powershell
-.\control.ps1 status
-.\control.ps1 logs
-.\control.ps1 logs -Tail 100
-.\control.ps1 run
+python control.py status
+python control.py logs
+python control.py logs --tail 100
+python control.py run
 ```
 
 ## Lifecycle
 
 ```powershell
-.\control.ps1 start
-.\control.ps1 stop
-.\control.ps1 install
-.\control.ps1 uninstall
-.\control.ps1 rollback
+python control.py start
+python control.py stop
+python control.py install
+python control.py uninstall
+python control.py rollback
 ```
 
 `rollback` removes only the watcher task and disables the local automation flag. It does not modify Clash Verge/Mihomo configuration.
@@ -24,7 +24,7 @@
 ## Update
 
 ```powershell
-.\control.ps1 update
+python control.py update
 ```
 
 This uses `git pull --ff-only`. A divergent local branch is intentionally not auto-merged; resolve it explicitly instead of letting an unattended network watcher rewrite source history.

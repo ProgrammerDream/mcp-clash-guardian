@@ -6,7 +6,7 @@
 
 - One shared codebase for multiple Windows machines.
 - Added tracked `config/default.json` plus ignored `config/local.json` machine overlay.
-- Added `control.ps1 update` using `git pull --ff-only`.
+- Added Python-only `control.py update` using `git pull --ff-only`; removed the PowerShell control plane.
 - Removed HOME/WORK code branches from the shared implementation.
 
 ### v2-stability

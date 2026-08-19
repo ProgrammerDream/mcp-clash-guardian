@@ -16,16 +16,7 @@ On Windows:
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m py_compile src\config_loader.py src\check_mcp.py src\mihomo_api.py src\watcher.py
-```
-
-Validate the PowerShell entrypoint:
-
-```powershell
-$errors = @()
-$tokens = $null
-[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\control.ps1), [ref]$tokens, [ref]$errors) | Out-Null
-if ($errors.Count) { $errors | Format-List; exit 1 }
+python -m py_compile control.py src\config_loader.py src\check_mcp.py src\mihomo_api.py src\watcher.py
 ```
 
 ## Configuration changes

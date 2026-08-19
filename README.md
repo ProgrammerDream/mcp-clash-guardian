@@ -61,7 +61,7 @@ Install Python dependency:
 python -m pip install -r requirements.txt
 ```
 
-`control.ps1 install` also installs the requirement automatically.
+`python control.py install` also installs the requirement automatically.
 
 ## Quick start
 
@@ -87,8 +87,8 @@ Example:
 Then:
 
 ```powershell
-.\control.ps1 install
-.\control.ps1 status
+python control.py install
+python control.py status
 ```
 
 `config/local.json` is intentionally ignored by Git.
@@ -98,7 +98,7 @@ Then:
 Normal update is one command:
 
 ```powershell
-.\control.ps1 update
+python control.py update
 ```
 
 It performs:
@@ -145,7 +145,7 @@ OPERATIONS.md             operator commands and troubleshooting
 CHANGELOG.md              strategy history
 SECURITY.md               secret-handling policy
 LICENSE                    MIT
-control.ps1                install/update/status/run/stop/start entrypoint
+control.py                 install/update/status/run/stop/start entrypoint
 requirements.txt
 config/default.json        tracked shared policy
 config/local.example.json  tracked template
