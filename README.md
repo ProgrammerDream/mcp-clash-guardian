@@ -150,22 +150,25 @@ Even rolling refresh can interrupt an individual in-flight session, so it is **n
 ## Files
 
 ```text
-README.md                 public overview
-OPERATIONS.md             operator commands and troubleshooting
-CHANGELOG.md              strategy history
-SECURITY.md               secret-handling policy
-LICENSE                    MIT
-control.py                 install/update/status/run/stop/start entrypoint
+README.md                          public overview
+OPERATIONS.md                      operator commands and troubleshooting
+CHANGELOG.md                       strategy history
+docs/implementation-plan-status.md cross-device goal / plan / implementation / current checkpoint
+SECURITY.md                        secret-handling policy
+LICENSE                             MIT
+control.py                          install/update/status/run/stop/start entrypoint
 requirements.txt
-config/default.json        tracked shared policy
-config/local.example.json  tracked template
-config/local.json          ignored machine-local values
+config/default.json                 tracked shared policy
+config/local.example.json           tracked template
+config/local.json                   ignored machine-local values
 src/config_loader.py
 src/check_mcp.py
 src/mihomo_api.py
 src/watcher.py
-runtime/                   ignored status/log output
+runtime/                            ignored status/log output
 ```
+
+For a new machine, chat, or agent session, pull first and read `docs/implementation-plan-status.md` before continuing implementation work. It is the only tracked project-level breakpoint/status document.
 
 ## Security
 

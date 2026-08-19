@@ -4,6 +4,7 @@
 
 ### v2.1-stability
 
+- Moved the project goal/plan/implementation/current-checkpoint document into tracked `docs/implementation-plan-status.md` so HOME/WORK and new agent sessions resume from the same Git-synchronized breakpoint.
 - `control.py` now re-executes itself with the machine-configured Python when the shell's `python` points to another virtual environment.
 - Relaxed healthy hot-sample count from 4/5 to 3/5 while keeping median <=200 ms and HTTP status checks.
 - Added latency classes: healthy, degraded-observe, severe, HTTP failure, and transport failure.
