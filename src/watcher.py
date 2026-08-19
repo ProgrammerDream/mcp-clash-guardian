@@ -13,7 +13,7 @@ import win32com.client
 
 from check_mcp import measure_mcp
 from config_loader import LOG_PATH, STATUS_PATH, load_config
-from mihomo_api import auto_group, connections, delete_connection, group_delay, version
+from mihomo_api import auto_group_state, connections, delete_connection, group_delay, version
 
 _wmi = None
 _last_reselect_monotonic = 0.0
@@ -79,13 +79,16 @@ def api_state(config: dict) -> dict[str, Any]:
     preferred = str(config.get("auto_group_name") or "") or None
     try:
         meta = version(pipe)
-        group_name, group = auto_group(pipe, preferred)
+        group_name, group, path = auto_group_state(pipe, preferred)
+        selected_leaf = path[-1] if path else group.get("now")
         return {
             "available": True,
             "version": meta.get("version"),
             "group_name": group_name,
             "group_type": group.get("type"),
-            "selected_node": group.get("now"),
+            "selected_group": group.get("now"),
+            "selected_node": selected_leaf,
+            "selection_path": path,
         }
     except Exception as exc:
         return {"available": False, "error": str(exc)}
@@ -337,7 +340,7 @@ def write_status(
 def trigger_mihomo_reselect(config: dict, api: dict) -> tuple[dict[str, Any], bool]:
     global _last_reselect_monotonic
     if not api.get("available") or not api.get("group_name"):
-        raise RuntimeError("Mihomo API/URLTest group unavailable")
+        raise RuntimeError("Mihomo API/automatic policy group unavailable")
     cooldown = max(0, int(config.get("mihomo_reselect_cooldown_seconds", 180)))
     elapsed = time.monotonic() - _last_reselect_monotonic if _last_reselect_monotonic else None
     if elapsed is not None and elapsed < cooldown:
@@ -351,15 +354,30 @@ def trigger_mihomo_reselect(config: dict, api: dict) -> tuple[dict[str, Any], bo
         return api, False
 
     pipe = str(config.get("mihomo_pipe") or r"\\.\pipe\verge-mihomo")
+    path = [str(value) for value in (api.get("selection_path") or []) if value]
     group_name = str(api["group_name"])
-    log_event("mihomo_group_healthcheck_start", group_name=group_name, selected_node=api.get("selected_node"))
-    result = group_delay(
+    groups_to_check = list(reversed(path[:-1])) if len(path) >= 2 else [group_name]
+    if group_name not in groups_to_check:
+        groups_to_check.append(group_name)
+
+    tested: dict[str, int] = {}
+    log_event(
+        "mihomo_group_healthcheck_start",
         group_name=group_name,
-        test_url=str(config.get("mihomo_healthcheck_url", "https://cp.cloudflare.com/generate_204")),
-        timeout_ms=int(config.get("mihomo_healthcheck_timeout_ms", 5000)),
-        expected_status=int(config.get("mihomo_healthcheck_expected_status", 204)),
-        pipe=pipe,
+        selection_path=path,
+        groups=groups_to_check,
+        selected_node=api.get("selected_node"),
     )
+    for target_group in groups_to_check:
+        result = group_delay(
+            group_name=target_group,
+            test_url=str(config.get("mihomo_healthcheck_url", "https://cp.cloudflare.com/generate_204")),
+            timeout_ms=int(config.get("mihomo_healthcheck_timeout_ms", 5000)),
+            expected_status=int(config.get("mihomo_healthcheck_expected_status", 204)),
+            pipe=pipe,
+        )
+        tested[target_group] = len(result)
+
     _last_reselect_monotonic = time.monotonic()
     time.sleep(int(config.get("mihomo_reselect_settle_seconds", 5)))
     after = api_state(config)
@@ -368,7 +386,9 @@ def trigger_mihomo_reselect(config: dict, api: dict) -> tuple[dict[str, Any], bo
         group_name=group_name,
         before_node=api.get("selected_node"),
         after_node=after.get("selected_node"),
-        tested=len(result),
+        before_path=path,
+        after_path=after.get("selection_path"),
+        tested=tested,
     )
     return after, True
 

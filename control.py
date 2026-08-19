@@ -249,6 +249,11 @@ def process_running(name: str) -> bool:
 def status_dict(config: dict[str, Any]) -> dict[str, Any]:
     task = get_task(str(config["watcher_task_name"]))
     status = read_json(STATUS_PATH) or {}
+    api_status = status.get("mihomo_api") or {}
+    selection_path = [str(value) for value in api_status.get("selection_path") or []]
+    primary_group = str(config.get("region_priority_primary_group") or "新加坡自动")
+    fallback_group = str(config.get("region_priority_fallback_group") or "台湾兜底")
+    region_tier = selection_path[1] if len(selection_path) >= 3 and selection_path[1] in {primary_group, fallback_group} else None
     task_state = "NotInstalled" if task is None else TASK_STATE.get(int(task.State), str(task.State))
     return {
         "machine_name": config.get("machine_name"),
@@ -262,7 +267,9 @@ def status_dict(config: dict[str, Any]) -> dict[str, Any]:
         "trigger": status.get("trigger"),
         "tun_up": status.get("tun_up"),
         "mihomo_pid": status.get("mihomo_pid"),
-        "mihomo_api": (status.get("mihomo_api") or {}).get("available"),
+        "mihomo_api": api_status.get("available"),
+        "region_tier": region_tier,
+        "selection_path": " -> ".join(selection_path) if selection_path else None,
         "selected_node": status.get("selected_node"),
         "argotunnel_connections": status.get("argotunnel_connection_count"),
         "mcp_ok": status.get("mcp_ok"),
@@ -316,6 +323,24 @@ def git_pull_ff_only() -> None:
         raise RuntimeError(f"git pull --ff-only failed: exit={result.returncode}")
 
 
+def sync_region_policy(config: dict[str, Any], force_runtime: bool = False) -> dict[str, Any]:
+    from clash_verge_policy import apply_region_priority
+
+    result = apply_region_priority(config, force_runtime=force_runtime)
+    runtime = result.get("verified") or result.get("runtime") or {}
+    append_control_log(
+        "region_priority_applied",
+        {
+            "changed": result.get("changed"),
+            "runtime_reloaded": result.get("runtime_reloaded"),
+            "group_type": runtime.get("group_type"),
+            "members": runtime.get("members"),
+            "selection_path": runtime.get("selection_path"),
+        },
+    )
+    return result
+
+
 def update(config: dict[str, Any]) -> None:
     task_name = str(config["watcher_task_name"])
     stop_task(task_name)
@@ -323,6 +348,8 @@ def update(config: dict[str, Any]) -> None:
         git_pull_ff_only()
         refreshed = load_config()
         install_requirements(refreshed)
+        if bool(refreshed.get("region_priority_enabled", False)):
+            sync_region_policy(refreshed, force_runtime=False)
         install_task(refreshed)
         append_control_log(
             "automation_updated",
@@ -342,7 +369,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="MCP Clash Guardian control plane")
     parser.add_argument(
         "action",
-        choices=["status", "logs", "start", "stop", "run", "install", "uninstall", "rollback", "update"],
+        choices=["status", "logs", "start", "stop", "run", "install", "apply-region-policy", "uninstall", "rollback", "update"],
         nargs="?",
         default="status",
     )
@@ -374,14 +401,39 @@ def main() -> int:
         run_once(config)
     elif args.action == "install":
         install_requirements(config)
-        install_task(load_config())
+        refreshed = load_config()
+        if bool(refreshed.get("region_priority_enabled", False)):
+            had_task = get_task(task_name) is not None
+            stop_task(task_name)
+            try:
+                sync_region_policy(refreshed, force_runtime=False)
+            except Exception:
+                if had_task:
+                    start_task(task_name)
+                raise
+        install_task(refreshed)
         print(f"AUTOMATION_INSTALLED={task_name}")
+    elif args.action == "apply-region-policy":
+        install_requirements(config)
+        had_task = get_task(task_name) is not None
+        stop_task(task_name)
+        try:
+            result = sync_region_policy(load_config(), force_runtime=True)
+        except Exception:
+            if had_task:
+                start_task(task_name)
+            raise
+        if had_task:
+            start_task(task_name)
+            time.sleep(3)
+        print(json.dumps(result, ensure_ascii=True, indent=2))
+        print_status(load_config())
     elif args.action in {"uninstall", "rollback"}:
         delete_task(task_name)
         set_local_value("enabled", False)
         append_control_log(f"automation_{args.action}", {"task": task_name})
         if args.action == "rollback":
-            print("ROLLBACK_OK: watcher removed; Clash Verge/Mihomo configuration was not modified.")
+            print("ROLLBACK_OK: watcher removed. Region-priority policy is not reverted automatically; use the runtime backup if needed.")
         else:
             print(f"AUTOMATION_UNINSTALLED={task_name}")
     elif args.action == "update":

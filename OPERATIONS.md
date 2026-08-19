@@ -7,7 +7,10 @@ python control.py status
 python control.py logs
 python control.py logs --tail 100
 python control.py run
+python control.py apply-region-policy
 ```
+
+`apply-region-policy` repairs/replays the managed `Singapore -> Taiwan fallback` policy for the active Clash Verge subscription. It creates a local ignored backup before replacing the default/managed extension script and hot-reloads Mihomo for immediate effect.
 
 ## Lifecycle
 
@@ -19,7 +22,7 @@ python control.py uninstall
 python control.py rollback
 ```
 
-`rollback` removes only the watcher task and disables the local automation flag. It does not modify Clash Verge/Mihomo configuration.
+`rollback` removes only the watcher task and disables the local automation flag. It does not automatically revert a managed region-priority extension script; local backups are kept under `runtime/backups/clash-verge-region-priority/`.
 
 ## Update
 
@@ -34,16 +37,20 @@ This uses `git pull --ff-only`. A divergent local branch is intentionally not au
 Healthy example:
 
 ```text
-strategy_version       : v2-stability
+strategy_version       : v2.2-region-priority
 watcher_state          : Running
 phase                  : monitoring
 tun_up                 : True
 mihomo_api             : True
+region_tier            : 新加坡自动
+selection_path         : 自动选择 -> 新加坡自动 -> <leaf Singapore node>
 argotunnel_connections : 2 or more
 mcp_ok                 : True
 hot_median_ms          : < threshold
 last_error             : empty
 ```
+
+With the managed region policy, `region_tier=台湾兜底` is expected only when the Singapore policy group is unavailable. If Singapore nodes are healthy and the tier remains Taiwan, inspect `selection_path` and re-run `python control.py apply-region-policy`.
 
 ## Event policy
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### v2.2-region-priority
+
+- Added a managed Clash Verge subscription extension script that keeps the normal automatic route in a strict `Singapore URLTest -> Taiwan fallback` hierarchy.
+- Singapore nodes now optimize only against other Singapore nodes; Taiwan is no longer allowed to win because of a small synthetic-delay difference.
+- Added `python control.py apply-region-policy` with ignored local backups and Mihomo hot reload for immediate activation.
+- `install` / `update` synchronize the managed region policy when enabled without reloading an already-current policy unnecessarily.
+- Added nested Mihomo group-to-leaf selection-path resolution so Cloudflared chain mismatch compares against the real leaf proxy.
+- Nested recovery health checks now refresh the inner regional group before the outer fallback group.
+- WORK validation observed a pre-fix mixed Cloudflared state with Taiwan on most HA paths and >470 ms MCP latency; after region policy + rolling chain alignment, all HA paths used Singapore and MCP returned to ~171 ms.
+
 ### v2.1-stability
 
 - Moved the project goal/plan/implementation/current-checkpoint document into tracked `docs/implementation-plan-status.md` so HOME/WORK and new agent sessions resume from the same Git-synchronized breakpoint.

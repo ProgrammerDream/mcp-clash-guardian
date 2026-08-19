@@ -45,6 +45,9 @@ The core rule is simple:
 - Does **not** touch Cloudflared while the real MCP endpoint remains healthy.
 - On confirmed failure, refreshes UDP/7844 connections one HA path at a time and waits for replacement before touching the next one.
 - Mihomo group-delay operations have a cooldown to avoid control-loop oscillation.
+- Optional region-priority policy turns the normal automatic route into `Singapore URLTest -> Taiwan fallback`, so Taiwan is disaster recovery instead of a latency competitor.
+- The region policy is persisted through the active Clash Verge subscription extension script and can be replayed with `python control.py apply-region-policy`.
+- Nested Mihomo policy groups are resolved to the final leaf proxy before comparing them with Cloudflared connection chains.
 - Machine-specific configuration and runtime logs are excluded from Git.
 - `control.py` bootstraps itself into the machine-configured Python from `config/local.json`, so a different `python` earlier in `PATH` does not break control commands.
 
@@ -108,11 +111,32 @@ It performs:
 stop watcher task
 → git pull --ff-only
 → install/update Python requirements
+→ synchronize the managed region-priority policy when enabled
 → start watcher task
 → print current status
 ```
 
 Your `config/local.json` and `runtime/` directory are not tracked and are preserved across updates.
+
+## Region-priority policy
+
+The public default is opt-in. Set `"region_priority_enabled": true` in ignored `config/local.json`; when enabled, the active automatic policy is reshaped to:
+
+```text
+automatic selection (fallback)
+├─ Singapore automatic (url-test, preferred)
+└─ Taiwan fallback (url-test, used only when Singapore is unavailable)
+```
+
+The Singapore pool keeps normal `url-test` behavior with tolerance, so healthy Singapore nodes can still optimize among themselves without allowing Taiwan to win on a small synthetic-delay difference. The outer `fallback` preserves region priority.
+
+Apply or repair the policy explicitly with:
+
+```powershell
+python control.py apply-region-policy
+```
+
+The command backs up the active Clash Verge subscription extension script plus profile/runtime metadata under ignored `runtime/backups/`, installs the managed extension script for persistence, hot-reloads Mihomo for immediate effect, and verifies the nested selection path. Existing non-default custom extension scripts are not overwritten automatically.
 
 ## Health policy
 
@@ -164,8 +188,9 @@ config/local.json                   ignored machine-local values
 src/config_loader.py
 src/check_mcp.py
 src/mihomo_api.py
+src/clash_verge_policy.py           persistent + hot-reload region-priority integration
 src/watcher.py
-runtime/                            ignored status/log output
+runtime/                            ignored status/log/backup output
 ```
 
 For a new machine, chat, or agent session, pull first and read `docs/implementation-plan-status.md` before continuing implementation work. It is the only tracked project-level breakpoint/status document.

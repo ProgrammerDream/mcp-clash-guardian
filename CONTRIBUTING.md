@@ -16,7 +16,7 @@ On Windows:
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m py_compile control.py src\config_loader.py src\check_mcp.py src\mihomo_api.py src\watcher.py
+python -m py_compile control.py src\config_loader.py src\check_mcp.py src\mihomo_api.py src\clash_verge_policy.py src\watcher.py
 ```
 
 ## Configuration changes

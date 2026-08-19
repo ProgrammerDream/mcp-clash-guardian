@@ -15,6 +15,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile Python sources
-        run: python -m py_compile control.py src/config_loader.py src/check_mcp.py src/mihomo_api.py src/watcher.py
+        run: python -m py_compile control.py src/config_loader.py src/check_mcp.py src/mihomo_api.py src/clash_verge_policy.py src/watcher.py
       - name: Parse default configuration
         run: python -c "import json, pathlib; json.loads(pathlib.Path('config/default.json').read_text(encoding='utf-8'))"

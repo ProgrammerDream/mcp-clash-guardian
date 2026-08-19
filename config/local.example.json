@@ -3,5 +3,6 @@
   "public_host": "mcp.example.com",
   "profile_path": "C:\\Users\\YOUR_USER\\.codexpro\\profiles\\YOUR_PROFILE.json",
   "python_exe": "C:\\Users\\YOUR_USER\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
-  "watcher_task_name": "MCP Clash Guardian"
+  "watcher_task_name": "MCP Clash Guardian",
+  "region_priority_enabled": false
 }

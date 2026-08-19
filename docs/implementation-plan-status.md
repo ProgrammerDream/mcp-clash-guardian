@@ -52,12 +52,25 @@ MCP Clash Guardian
 
 The watcher must **not** become a second proxy scheduler.
 
-## 3. Current shared strategy — v2.1-stability
+## 3. Current shared strategy — v2.2-region-priority
+
+### Region priority
+
+```text
+automatic selection (fallback)
+├─ Singapore automatic (URLTest, primary)
+│  └─ Singapore leaf proxies only
+└─ Taiwan fallback (URLTest, disaster recovery)
+   └─ Taiwan leaf proxies only
+```
+
+Singapore nodes compete only with other Singapore nodes. Taiwan must not become the normal route while the Singapore group is healthy. The policy is persisted in the active Clash Verge subscription extension script and can be replayed with `python control.py apply-region-policy`.
 
 ### Normal node change
 
 ```text
-Mihomo URLTest changes node
+Mihomo regional URLTest changes the leaf node
+→ resolve nested policy path to the real leaf proxy
 → debounce until selection is stable
 → test real MCP endpoint
 → healthy: zero Tunnel action
@@ -107,7 +120,9 @@ confirmed failure
 
 ### Control-loop protections
 
-- URLTest changes are debounced.
+- Singapore and Taiwan are separate regional URLTest pools; the outer fallback preserves Singapore-first ordering.
+- Nested policy groups are resolved to the final leaf before node-change and chain-mismatch decisions.
+- URLTest leaf changes are debounced.
 - A single slow sample does not mutate the network.
 - 200–350 ms median is observation-only.
 - Rolling refresh is a rescue action, never a normal node-change action.
@@ -137,8 +152,9 @@ mcp-clash-guardian/
 │  ├─ config_loader.py
 │  ├─ check_mcp.py
 │  ├─ mihomo_api.py
+│  ├─ clash_verge_policy.py             # managed SG-first/TW-fallback integration
 │  └─ watcher.py
-└─ runtime/                            # ignored local status/logs
+└─ runtime/                              # ignored local status/logs/backups
 ```
 
 ## 5. Cross-device continuation workflow
@@ -190,7 +206,7 @@ Credentials are read at runtime through the local profile path and remain machin
 | 2 | Python-only control plane | ✅ Done | `control.py` owns install/update/status/logs/run/start/stop/uninstall/rollback |
 | 3 | Interpreter bootstrap | ✅ Done | `python control.py ...` re-execs with machine-configured Python when PATH points to another venv |
 | 4 | Shared default + local overlay model | ✅ Done | `config/default.json` tracked; `config/local.json` ignored |
-| 5 | v2.1 stability policy | ✅ Done | latency classification, chain mismatch detection, deferred node-change handling |
+| 5 | v2.1 stability foundation | ✅ Done | latency classification, chain mismatch detection, deferred node-change handling |
 | 6 | WORK migration to shared repository | ✅ Done | watcher task runs shared `src/watcher.py`; Python-only control validated |
 | 7 | WORK current functional validation | ✅ Done | healthy MCP observed around mid-160–170 ms range, expected HTTP status, Singapore Cloudflare edge |
 | 8 | HOME migration to shared repository | ✅ Done | HOME cloned the same repository, created only ignored `config/local.json`, and switched the existing watcher task to shared `src/watcher.py` |
@@ -199,28 +215,29 @@ Credentials are read at runtime through the local profile path and remain machin
 | 11 | Bind both machines to same remote and test update | ✅ Done | WORK and HOME both use the same GitHub remote; `python control.py update` passed on both machines without replacing local config/runtime |
 | 12 | Archive HOME pre-unification implementation | ✅ Done | old HOME standalone Clash watcher moved to `docs/archive/network/mcp-clash-home-pre-unification-2026-08-19` outside the shared repository |
 | 13 | Make this Git-tracked file the sole implementation/status document | ✅ Done | legacy infrastructure document becomes a pointer only |
+| 14 | v2.2 Singapore-first / Taiwan-fallback rollout | 🔄 Partial | WORK applied and validated: 15 SG + 9 TW nodes, outer fallback selects SG tier, 4 HA paths aligned to SG, MCP recovered to ~171 ms; HOME update pending |
 
 ## 8. Current checkpoint
 
 ```text
-Shared strategy: v2.1-stability
+Shared strategy: v2.2-region-priority (WORK active; HOME rollout pending this commit)
 Control plane: Python-only
 Shared-code machines: WORK + HOME
-WORK watcher: Running; recent healthy MCP ~165–170 ms; Singapore edge; 4 HA connections
-HOME watcher: Running; recent healthy MCP ~159–170 ms; Singapore edge; 2 HA connections
-WORK and HOME: same repository / same shared source / machine-only differences in ignored local config/runtime
+WORK watcher: Running; region path = automatic selection -> Singapore automatic -> Singapore leaf; 4 HA connections aligned to Singapore; healthy MCP ~171 ms after settle
+HOME watcher: Running on prior shared commit until v2.2 is pulled/applied
+WORK and HOME: same repository / machine-only differences remain in ignored local config/runtime
 GitHub remote: public `ProgrammerDream/mcp-clash-guardian`
-WORK update path: validated
-HOME update path: validated
+WORK region-policy backup: local ignored runtime/backups entry created before persistent extension-script change
 Pre-unification standalone implementations: archived and removed from active run paths
 ```
 
-Important recent findings already incorporated into v2.1:
+Important recent findings already incorporated into v2.2:
 
 1. A shell may resolve `python` to an unrelated virtual environment without `pywin32`; `control.py` now bootstraps into the configured interpreter.
 2. Treating `median ~180 ms` plus a few >200 ms samples as a failure caused unnecessary rolling refresh and much worse latency; v2.1 separates degraded latency from real failures.
 3. Mihomo may change node while Cloudflared long-lived UDP/7844 connections remain on the previous proxy chain; v2.1 detects this explicit mismatch.
 4. A node change occurring during a long recovery must not be swallowed by updating `last_node` at the end of the same recovery.
+5. A global URLTest can select Taiwan even though the real MCP path becomes dramatically slower. WORK evidence showed most Cloudflared HA paths on a Taiwan leaf while MCP rose above ~470 ms; strict SG-first regional fallback plus chain alignment returned the path to ~171 ms.
 
 ## 9. Acceptance criteria
 
@@ -234,7 +251,9 @@ Important recent findings already incorporated into v2.1:
 
 ### Functional
 
-- Normal URLTest node changes do not mutate Tunnel paths when MCP remains healthy.
+- With Singapore nodes healthy, the outer automatic group remains on the Singapore tier; Taiwan is only a fallback tier.
+- Nested policy paths resolve to a real leaf proxy before Cloudflared chain comparison.
+- Normal regional URLTest leaf changes do not mutate Tunnel paths when MCP remains healthy.
 - 200–350 ms latency degradation is observed before any mutation.
 - Confirmed hard/severe failures can recover automatically without deleting all HA paths at once.
 - `502`, `530`, and Cloudflare `1033` are distinguishable in logs.
@@ -245,13 +264,11 @@ Important recent findings already incorporated into v2.1:
 Current continuation order:
 
 ```text
-1. Normal operation: both machines update only through `python control.py update`.
-2. If a stability issue appears, reproduce on the affected machine and inspect its local runtime log.
-3. Implement shared policy/code changes once in this repository.
-4. Update CHANGELOG.md when behavior changes.
-5. Update this file when project-level status/next actions change.
-6. Commit/push shared changes, then run `python control.py update` on the other machine.
-7. Keep HOME/WORK-specific values only in ignored `config/local.json` and runtime files.
+1. Commit/push the validated v2.2 region-priority implementation from WORK.
+2. Run `python control.py update` on HOME; it should install/sync the managed policy and preserve HOME local config/runtime.
+3. Validate HOME `selection_path` stays on the Singapore tier and MCP remains healthy.
+4. Update this checkpoint to mark v2.2 rollout complete and confirm both machines share the same commit.
+5. Thereafter, normal operation returns to `python control.py update` on both machines and evidence-driven stability tuning only.
 ```
 
 Unified migration is complete. Future work is iterative stability tuning rather than another HOME/WORK migration project.

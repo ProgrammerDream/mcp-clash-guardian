@@ -117,11 +117,17 @@ def proxies(pipe: str = DEFAULT_PIPE) -> dict[str, Any]:
     return response.json()
 
 
-def group_snapshot(pipe: str = DEFAULT_PIPE) -> dict[str, dict[str, Any]]:
-    payload = proxies(pipe)
+GROUP_TYPES = {"URLTest", "Fallback", "Selector", "LoadBalance"}
+
+
+def group_snapshot(
+    pipe: str = DEFAULT_PIPE,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    payload = payload or proxies(pipe)
     result: dict[str, dict[str, Any]] = {}
     for name, item in (payload.get("proxies") or {}).items():
-        if isinstance(item, dict) and item.get("type") in {"URLTest", "Fallback", "Selector", "LoadBalance"}:
+        if isinstance(item, dict) and item.get("type") in GROUP_TYPES:
             result[name] = item
     return result
 
@@ -134,6 +140,49 @@ def auto_group(pipe: str = DEFAULT_PIPE, preferred: str | None = None) -> tuple[
         if item.get("type") == "URLTest":
             return name, item
     raise RuntimeError("No Mihomo URLTest group found")
+
+
+def selection_path(
+    group_name: str,
+    pipe: str = DEFAULT_PIPE,
+    payload: dict[str, Any] | None = None,
+) -> list[str]:
+    """Resolve nested policy groups to the final leaf proxy without looping forever."""
+    payload = payload or proxies(pipe)
+    items = payload.get("proxies") or {}
+    path: list[str] = []
+    current = str(group_name)
+    seen: set[str] = set()
+
+    while current and current not in seen:
+        seen.add(current)
+        path.append(current)
+        item = items.get(current)
+        if not isinstance(item, dict) or item.get("type") not in GROUP_TYPES:
+            break
+        selected = item.get("now")
+        if not selected:
+            break
+        current = str(selected)
+    return path
+
+
+def auto_group_state(
+    pipe: str = DEFAULT_PIPE,
+    preferred: str | None = None,
+) -> tuple[str, dict[str, Any], list[str]]:
+    """Return the selected auto group plus its nested group-to-leaf selection path."""
+    payload = proxies(pipe)
+    groups = group_snapshot(pipe, payload)
+    if preferred and preferred in groups:
+        group_name = preferred
+        group = groups[preferred]
+    else:
+        match = next(((name, item) for name, item in groups.items() if item.get("type") == "URLTest"), None)
+        if match is None:
+            raise RuntimeError("No Mihomo URLTest group found")
+        group_name, group = match
+    return group_name, group, selection_path(group_name, pipe=pipe, payload=payload)
 
 
 def group_delay(
