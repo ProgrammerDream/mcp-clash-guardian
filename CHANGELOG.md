@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### v2.1-stability
+
+- `control.py` now re-executes itself with the machine-configured Python when the shell's `python` points to another virtual environment.
+- Relaxed healthy hot-sample count from 4/5 to 3/5 while keeping median <=200 ms and HTTP status checks.
+- Added latency classes: healthy, degraded-observe, severe, HTTP failure, and transport failure.
+- 200-350 ms median now uses read-only observation/retry instead of immediately mutating Cloudflared connections.
+- Added explicit Mihomo-selected-node vs Argotunnel-chain mismatch detection.
+- Severe latency on an already-aligned Tunnel now prefers Mihomo reselection before refreshing the same path.
+- Node changes that occur during a long recovery are deferred into the next event-loop iteration instead of being silently absorbed.
+
 ### Unified open-source layout
 
 - One shared codebase for multiple Windows machines.

@@ -105,6 +105,7 @@ def log_mcp_check(reason: str, stage: str, measurement: dict, **extra: Any) -> N
         reason=reason,
         stage=stage,
         ok=measurement.get("ok"),
+        health_class=measurement.get("health_class"),
         hot_median_ms=measurement.get("hot_median_ms"),
         hot_under_threshold=measurement.get("hot_under_threshold"),
         hot_statuses=measurement.get("hot_statuses") or measurement.get("statuses"),
@@ -159,6 +160,22 @@ def argotunnel_connections(config: dict) -> list[dict[str, Any]]:
         ):
             result.append(item)
     return result
+
+
+def argotunnel_chain_nodes(config: dict) -> list[str]:
+    nodes: list[str] = []
+    for item in argotunnel_connections(config):
+        chains = item.get("chains") or []
+        if chains:
+            nodes.append(str(chains[0]))
+    return nodes
+
+
+def argotunnel_chain_mismatch(config: dict, selected_node: str | None) -> tuple[bool, list[str]]:
+    nodes = argotunnel_chain_nodes(config)
+    if not selected_node or not nodes:
+        return False, nodes
+    return all(node != selected_node for node in nodes), nodes
 
 
 def rolling_refresh_argotunnel(config: dict, reason: str) -> dict[str, Any]:
@@ -307,6 +324,7 @@ def write_status(
         "selected_node": (api or {}).get("selected_node"),
         "argotunnel_connection_count": argotunnel_count,
         "mcp_ok": (measurement or {}).get("ok"),
+        "mcp_health_class": (measurement or {}).get("health_class"),
         "hot_median_ms": (measurement or {}).get("hot_median_ms"),
         "hot_under_threshold": (measurement or {}).get("hot_under_threshold"),
         "http_status_ok": (measurement or {}).get("status_ok"),
@@ -382,6 +400,39 @@ def recover(config: dict, reason: str) -> tuple[dict, dict, str]:
             log_event("recovery_end", reason=reason, action="transient_recovered", selected_node=api.get("selected_node"))
             return measurement, api, "transient_recovered"
 
+        if measurement.get("health_class") == "latency_degraded":
+            observe_seconds = max(1, int(config.get("latency_observe_retry_seconds", 10)))
+            observe_attempts = max(1, int(config.get("latency_observe_retry_attempts", 3)))
+            for attempt in range(1, observe_attempts + 1):
+                log_event(
+                    "latency_observe_wait",
+                    reason=reason,
+                    attempt=attempt,
+                    max_attempts=observe_attempts,
+                    seconds=observe_seconds,
+                    hot_median_ms=measurement.get("hot_median_ms"),
+                )
+                time.sleep(observe_seconds)
+                measurement = measure_mcp(config)
+                log_mcp_check(reason, "latency_observe", measurement, attempt=attempt)
+                if measurement.get("ok"):
+                    api = api_state(config)
+                    write_status(config, "monitoring", reason, measurement, api)
+                    log_event("recovery_end", reason=reason, action="latency_observe_recovered")
+                    return measurement, api, "latency_observe_recovered"
+                if measurement.get("health_class") != "latency_degraded":
+                    break
+            if measurement.get("health_class") == "latency_degraded":
+                api = api_state(config)
+                write_status(config, "observing", reason, measurement, api)
+                log_event(
+                    "recovery_end",
+                    reason=reason,
+                    action="latency_degraded_observe_only",
+                    hot_median_ms=measurement.get("hot_median_ms"),
+                )
+                return measurement, api, "latency_degraded_observe_only"
+
         api = api_state(config)
         selected_node = api.get("selected_node")
         selected_invalid = invalid_auto_node(config, selected_node)
@@ -418,13 +469,36 @@ def recover(config: dict, reason: str) -> tuple[dict, dict, str]:
                             write_status(config, "monitoring", reason, measurement, api)
                             return measurement, api, "valid_node_rolling_refresh"
         else:
-            rolling_refresh_argotunnel(config, f"{reason}:confirmed_unhealthy")
-            measurement = measure_mcp(config)
-            log_mcp_check(reason, "after_rolling_refresh", measurement)
-            if measurement.get("ok"):
-                api = api_state(config)
-                write_status(config, "monitoring", reason, measurement, api)
-                return measurement, api, "rolling_refresh"
+            mismatch, chain_nodes = argotunnel_chain_mismatch(config, selected_node)
+            failure_class = str(measurement.get("health_class") or "unknown")
+            should_refresh_first = mismatch or failure_class in {"http_failure", "transport_failure"}
+            if should_refresh_first:
+                log_event(
+                    "argotunnel_recovery_decision",
+                    reason=reason,
+                    action="rolling_refresh",
+                    failure_class=failure_class,
+                    selected_node=selected_node,
+                    chain_nodes=chain_nodes,
+                    chain_mismatch=mismatch,
+                )
+                rolling_refresh_argotunnel(config, f"{reason}:confirmed_unhealthy")
+                measurement = measure_mcp(config)
+                log_mcp_check(reason, "after_rolling_refresh", measurement)
+                if measurement.get("ok"):
+                    api = api_state(config)
+                    write_status(config, "monitoring", reason, measurement, api)
+                    return measurement, api, "rolling_refresh"
+            else:
+                log_event(
+                    "argotunnel_recovery_decision",
+                    reason=reason,
+                    action="skip_same_path_refresh",
+                    failure_class=failure_class,
+                    selected_node=selected_node,
+                    chain_nodes=chain_nodes,
+                    chain_mismatch=mismatch,
+                )
 
             api = api_state(config)
             if api.get("available"):
@@ -556,6 +630,7 @@ def run_watch() -> int:
                 time.sleep(poll_seconds)
                 continue
 
+            preserve_last_node = False
             current_tun = tun_up(config)
             current_pid = mihomo_pid(config)
             api = api_state(config) if current_pid else {"available": False, "error": "mihomo process missing"}
@@ -568,8 +643,12 @@ def run_watch() -> int:
                 reason = "mihomo_pid_changed"
             elif current_node and last_node and current_node != last_node:
                 reason = "auto_node_changed"
-            elif current_tun and current_pid and (time.monotonic() - last_health) >= int(config.get("health_check_seconds", 600)):
-                reason = "periodic_health_check"
+            else:
+                health_interval = int(config.get("health_check_seconds", 600))
+                if (last_measurement or {}).get("health_class") == "latency_degraded":
+                    health_interval = min(health_interval, int(config.get("degraded_health_check_seconds", 60)))
+                if current_tun and current_pid and (time.monotonic() - last_health) >= health_interval:
+                    reason = "periodic_health_check"
 
             if reason:
                 if reason == "auto_node_changed":
@@ -589,6 +668,7 @@ def run_watch() -> int:
                     time.sleep(int(config.get("stabilize_seconds", 3)))
 
             if reason:
+                node_before_recovery = current_node
                 log_event(
                     "watch_event",
                     reason=reason,
@@ -604,6 +684,15 @@ def run_watch() -> int:
                 current_pid = mihomo_pid(config)
                 api = api_state(config) if current_pid else api
                 current_node = api.get("selected_node") if api.get("available") else current_node
+                if current_node and node_before_recovery and current_node != node_before_recovery:
+                    preserve_last_node = True
+                    log_event(
+                        "node_changed_during_recovery",
+                        reason=reason,
+                        before_node=node_before_recovery,
+                        after_node=current_node,
+                        action="defer_to_next_loop",
+                    )
             else:
                 phase = "monitoring" if current_tun and current_pid else "waiting"
                 write_status(config, phase, "idle", last_measurement, api)
@@ -611,7 +700,7 @@ def run_watch() -> int:
             last_tun = current_tun
             if current_pid:
                 last_pid = current_pid
-            if current_node:
+            if current_node and not preserve_last_node:
                 last_node = current_node
             time.sleep(poll_seconds)
         except Exception as exc:

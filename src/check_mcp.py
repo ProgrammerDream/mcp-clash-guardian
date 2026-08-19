@@ -27,6 +27,7 @@ def measure_mcp(config: dict | None = None) -> dict:
     hot_count = int(config.get("hot_sample_count", 5))
     total = warmup_count + hot_count
     threshold_ms = float(config.get("threshold_ms", 200))
+    recovery_latency_threshold_ms = float(config.get("recovery_latency_threshold_ms", 350))
     expected_status = int(config.get("expected_http_status", 400))
     required_good = int(config.get("required_hot_under_threshold", max(1, hot_count - 1)))
     timeout_seconds = float(config.get("request_timeout_seconds", 15))
@@ -57,6 +58,8 @@ def measure_mcp(config: dict | None = None) -> dict:
     except Exception as exc:
         return {
             "ok": False,
+            "health_class": "transport_failure",
+            "status_ok": False,
             "public_host": config.get("public_host"),
             "times_ms": values_ms,
             "statuses": statuses,
@@ -72,6 +75,16 @@ def measure_mcp(config: dict | None = None) -> dict:
     hot_median = round(statistics.median(hot), 1) if hot else None
     hot_good = sum(1 for value in hot if value <= threshold_ms)
     status_ok = len(hot_statuses) == hot_count and all(status == expected_status for status in hot_statuses)
+    if not status_ok:
+        health_class = "http_failure"
+    elif hot_median is None:
+        health_class = "unknown"
+    elif hot_median <= threshold_ms:
+        health_class = "healthy"
+    elif hot_median < recovery_latency_threshold_ms:
+        health_class = "latency_degraded"
+    else:
+        health_class = "latency_severe"
     ok = bool(
         status_ok
         and hot_median is not None
@@ -80,10 +93,12 @@ def measure_mcp(config: dict | None = None) -> dict:
     )
     return {
         "ok": ok,
+        "health_class": health_class,
         "public_host": config["public_host"],
         "warmup_count": warmup_count,
         "hot_sample_count": hot_count,
         "threshold_ms": threshold_ms,
+        "recovery_latency_threshold_ms": recovery_latency_threshold_ms,
         "expected_http_status": expected_status,
         "times_ms": values_ms,
         "statuses": statuses,

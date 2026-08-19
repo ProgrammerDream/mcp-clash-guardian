@@ -71,6 +71,25 @@ def hidden_creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def bootstrap_runtime_python(config: dict[str, Any]) -> int | None:
+    """Re-run control.py with the machine-configured Python when PATH points elsewhere."""
+    configured = Path(str(config["python_exe"])).expanduser()
+    if not configured.exists():
+        raise RuntimeError(f"Configured Python not found: {configured}")
+
+    current = Path(sys.executable)
+    current_norm = os.path.normcase(os.path.abspath(str(current)))
+    configured_norm = os.path.normcase(os.path.abspath(str(configured)))
+    if current_norm == configured_norm:
+        return None
+
+    result = subprocess.run(
+        [str(configured), str(Path(__file__).resolve()), *sys.argv[1:]],
+        cwd=ROOT,
+    )
+    return int(result.returncode)
+
+
 def install_requirements(config: dict[str, Any]) -> None:
     python_exe = Path(str(config["python_exe"]))
     if not python_exe.exists():
@@ -247,6 +266,7 @@ def status_dict(config: dict[str, Any]) -> dict[str, Any]:
         "selected_node": status.get("selected_node"),
         "argotunnel_connections": status.get("argotunnel_connection_count"),
         "mcp_ok": status.get("mcp_ok"),
+        "mcp_health_class": status.get("mcp_health_class"),
         "hot_median_ms": status.get("hot_median_ms"),
         "cf_ray": status.get("cf_ray"),
         "last_error": status.get("last_error"),
@@ -330,6 +350,10 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config()
+    bootstrap_exit = bootstrap_runtime_python(config)
+    if bootstrap_exit is not None:
+        return bootstrap_exit
+
     task_name = str(config["watcher_task_name"])
 
     if args.action == "status":

@@ -46,6 +46,7 @@ The core rule is simple:
 - On confirmed failure, refreshes UDP/7844 connections one HA path at a time and waits for replacement before touching the next one.
 - Mihomo group-delay operations have a cooldown to avoid control-loop oscillation.
 - Machine-specific configuration and runtime logs are excluded from Git.
+- `control.py` bootstraps itself into the machine-configured Python from `config/local.json`, so a different `python` earlier in `PATH` does not break control commands.
 
 ## Requirements
 
@@ -124,10 +125,19 @@ The default MCP acceptance rule is:
 5 hot requests
 expected HTTP status = 400
 hot median <= 200 ms
-at least 4/5 hot requests <= 200 ms
+at least 3/5 hot requests <= 200 ms
 ```
 
-A single slow request or one transient `502/530` does not immediately mutate the network. The watcher confirms the failure first.
+Latency is classified separately from transport failure:
+
+```text
+<= 200 ms median          healthy
+200-350 ms median         observe/retry only; do not mutate Tunnel
+>= 350 ms median          severe latency; recovery may be allowed after confirmation
+502/530/1033/transport    hard failure class; recovery may be allowed after confirmation
+```
+
+A single slow request or one transient `502/530` does not immediately mutate the network. The watcher confirms the failure first. If Mihomo changed node during a long recovery, that change is deferred back into the event loop instead of being silently absorbed.
 
 ## Why rolling refresh is only a rescue action
 
