@@ -193,11 +193,11 @@ Credentials are read at runtime through the local profile path and remain machin
 | 5 | v2.1 stability policy | ✅ Done | latency classification, chain mismatch detection, deferred node-change handling |
 | 6 | WORK migration to shared repository | ✅ Done | watcher task runs shared `src/watcher.py`; Python-only control validated |
 | 7 | WORK current functional validation | ✅ Done | healthy MCP observed around mid-160–170 ms range, expected HTTP status, Singapore Cloudflare edge |
-| 8 | HOME migration to shared repository | ⚠️ Pending | HOME connector was returning 502 during the last migration attempt; existing stable HOME watcher intentionally left untouched |
-| 9 | HOME shared-repo functional validation | ⏳ Pending | migrate only after connector is reachable; then validate status/run/TUN recovery and latency |
+| 8 | HOME migration to shared repository | ✅ Done | HOME cloned the same repository, created only ignored `config/local.json`, and switched the existing watcher task to shared `src/watcher.py` |
+| 9 | HOME shared-repo functional validation | ✅ Done | shared `control.py run/install/update/status` passed; healthy MCP observed around ~159–170 ms with Singapore edge and 2 HA connections |
 | 10 | Create/push public GitHub repository | ✅ Done | public repository created and `main` pushed to GitHub under `ProgrammerDream/mcp-clash-guardian` |
-| 11 | Bind both machines to same remote and test update | 🔄 Partial | WORK `main` now tracks `origin/main`; HOME remote/update validation remains pending |
-| 12 | Archive HOME pre-unification implementation | ⏳ Pending | only after HOME shared implementation passes validation |
+| 11 | Bind both machines to same remote and test update | ✅ Done | WORK and HOME both use the same GitHub remote; `python control.py update` passed on both machines without replacing local config/runtime |
+| 12 | Archive HOME pre-unification implementation | ✅ Done | old HOME standalone Clash watcher moved to `docs/archive/network/mcp-clash-home-pre-unification-2026-08-19` outside the shared repository |
 | 13 | Make this Git-tracked file the sole implementation/status document | ✅ Done | legacy infrastructure document becomes a pointer only |
 
 ## 8. Current checkpoint
@@ -205,14 +205,14 @@ Credentials are read at runtime through the local profile path and remain machin
 ```text
 Shared strategy: v2.1-stability
 Control plane: Python-only
-Current shared-code machine: WORK
-WORK watcher: Running
-WORK current path: healthy after latest recovery/strategy iteration
-WORK recent healthy MCP: ~165–170 ms class
-WORK Cloudflare edge observed: Singapore
-Shared local Git: active; WORK main tracks origin/main
-HOME: existing stable implementation preserved; unified migration pending connector recovery
-GitHub remote: public repository created and initial main push completed
+Shared-code machines: WORK + HOME
+WORK watcher: Running; recent healthy MCP ~165–170 ms; Singapore edge; 4 HA connections
+HOME watcher: Running; recent healthy MCP ~159–170 ms; Singapore edge; 2 HA connections
+WORK and HOME: same repository / same shared source / machine-only differences in ignored local config/runtime
+GitHub remote: public `ProgrammerDream/mcp-clash-guardian`
+WORK update path: validated
+HOME update path: validated
+Pre-unification standalone implementations: archived and removed from active run paths
 ```
 
 Important recent findings already incorporated into v2.1:
@@ -245,15 +245,16 @@ Important recent findings already incorporated into v2.1:
 Current continuation order:
 
 ```text
-1. Verify remote + `python control.py update` on WORK.
-2. Reconnect to HOME when its connector is healthy.
-3. Clone/pull the same repository on HOME.
-4. Create HOME `config/local.json` only; do not fork shared policy/code.
-5. Install shared watcher task on HOME.
-6. Validate HOME status/run/TUN recovery/latency.
-7. Archive HOME's pre-unification implementation.
-8. Confirm HOME and WORK are on the same Git commit.
+1. Normal operation: both machines update only through `python control.py update`.
+2. If a stability issue appears, reproduce on the affected machine and inspect its local runtime log.
+3. Implement shared policy/code changes once in this repository.
+4. Update CHANGELOG.md when behavior changes.
+5. Update this file when project-level status/next actions change.
+6. Commit/push shared changes, then run `python control.py update` on the other machine.
+7. Keep HOME/WORK-specific values only in ignored `config/local.json` and runtime files.
 ```
+
+Unified migration is complete. Future work is iterative stability tuning rather than another HOME/WORK migration project.
 
 ---
 
