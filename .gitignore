@@ -1,0 +1,29 @@
+# Machine-local configuration and runtime
+config/local.json
+runtime/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs / temporary files
+*.log
+*.tmp
+*.bak
+
+# Secrets / credentials / keys
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+!*.example
