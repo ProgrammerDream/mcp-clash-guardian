@@ -195,8 +195,8 @@ Credentials are read at runtime through the local profile path and remain machin
 | 7 | WORK current functional validation | ✅ Done | healthy MCP observed around mid-160–170 ms range, expected HTTP status, Singapore Cloudflare edge |
 | 8 | HOME migration to shared repository | ⚠️ Pending | HOME connector was returning 502 during the last migration attempt; existing stable HOME watcher intentionally left untouched |
 | 9 | HOME shared-repo functional validation | ⏳ Pending | migrate only after connector is reachable; then validate status/run/TUN recovery and latency |
-| 10 | Create/push public GitHub repository | ⚠️ Pending auth/push | local Git repository exists; GitHub CLI installation completed; finish account authorization then create/push remote |
-| 11 | Bind both machines to same remote and test update | ⏳ Pending | verify both machines can `python control.py update` without changing local config/runtime |
+| 10 | Create/push public GitHub repository | ✅ Done | public repository created and `main` pushed to GitHub under `ProgrammerDream/mcp-clash-guardian` |
+| 11 | Bind both machines to same remote and test update | 🔄 Partial | WORK `main` now tracks `origin/main`; HOME remote/update validation remains pending |
 | 12 | Archive HOME pre-unification implementation | ⏳ Pending | only after HOME shared implementation passes validation |
 | 13 | Make this Git-tracked file the sole implementation/status document | ✅ Done | legacy infrastructure document becomes a pointer only |
 
@@ -210,9 +210,9 @@ WORK watcher: Running
 WORK current path: healthy after latest recovery/strategy iteration
 WORK recent healthy MCP: ~165–170 ms class
 WORK Cloudflare edge observed: Singapore
-Shared local Git: active
+Shared local Git: active; WORK main tracks origin/main
 HOME: existing stable implementation preserved; unified migration pending connector recovery
-GitHub remote: pending final authorization/create/push step
+GitHub remote: public repository created and initial main push completed
 ```
 
 Important recent findings already incorporated into v2.1:
@@ -245,15 +245,14 @@ Important recent findings already incorporated into v2.1:
 Current continuation order:
 
 ```text
-1. Finish GitHub authorization and push the shared repository.
-2. Verify remote + python control.py update on WORK.
-3. Reconnect to HOME when its connector is healthy.
-4. Clone/pull the same repository on HOME.
-5. Create HOME config/local.json only; do not fork shared policy/code.
-6. Install shared watcher task on HOME.
-7. Validate HOME status/run/TUN recovery/latency.
-8. Archive HOME's pre-unification implementation.
-9. Confirm HOME and WORK are on the same Git commit.
+1. Verify remote + `python control.py update` on WORK.
+2. Reconnect to HOME when its connector is healthy.
+3. Clone/pull the same repository on HOME.
+4. Create HOME `config/local.json` only; do not fork shared policy/code.
+5. Install shared watcher task on HOME.
+6. Validate HOME status/run/TUN recovery/latency.
+7. Archive HOME's pre-unification implementation.
+8. Confirm HOME and WORK are on the same Git commit.
 ```
 
 ---
