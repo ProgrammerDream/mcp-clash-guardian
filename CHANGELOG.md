@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### v2.3-minimal-follow
+
+- Replaced the default network-control strategy with a minimal Cloudflared follow mode: Clash/VPN node selection stays native/manual, while the watcher only reacts to TUN-up, Mihomo restart, or a stable selected-node change.
+- Stable manual node changes are debounced before restarting Cloudflared; no group-wide delay probe, node reselection, rolling Argotunnel refresh, or managed proxy-group rewrite runs in follow mode.
+- Cloudflared restart now has bounded stop/start waits plus a forced process kill fallback for a service stuck in `Stop Pending`, followed by an SCM stop-state wait before restart.
+- Follow mode installs the watcher task at `Highest` so it can restart the Windows Cloudflared service without elevating Clash/Mihomo control logic.
+- Region-priority policy is off by default and hard-gated from `install`, `update`, and `apply-region-policy` while follow mode is active, including machines with stale `region_priority_enabled=true` overrides.
+- WORK field validation: manual node change and TUN off/on both automatically rebuilt Cloudflared; MCP returned healthy at ~179-182 ms through SIN after warm-up. HOME native baseline measured ~168 ms.
+
 ### v2.2-region-priority
 
 - Added a managed Clash Verge subscription extension script that keeps the normal automatic route in a strict `Singapore URLTest -> Taiwan fallback` hierarchy.

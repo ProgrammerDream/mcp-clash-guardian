@@ -169,6 +169,13 @@ def delete_task(task_name: str) -> None:
         pass
 
 
+def should_apply_region_policy(config: dict[str, Any]) -> bool:
+    return (
+        str(config.get("watcher_mode") or "cloudflared-follow") != "cloudflared-follow"
+        and bool(config.get("region_priority_enabled", False))
+    )
+
+
 def install_task(config: dict[str, Any]) -> None:
     # Task Scheduler COM constants.
     TASK_TRIGGER_LOGON = 9
@@ -176,6 +183,7 @@ def install_task(config: dict[str, Any]) -> None:
     TASK_CREATE_OR_UPDATE = 6
     TASK_LOGON_INTERACTIVE_TOKEN = 3
     TASK_RUNLEVEL_LUA = 0
+    TASK_RUNLEVEL_HIGHEST = 1
     TASK_INSTANCES_IGNORE_NEW = 2
 
     task_name = str(config["watcher_task_name"])
@@ -209,7 +217,8 @@ def install_task(config: dict[str, Any]) -> None:
     principal = definition.Principal
     principal.UserId = user_id
     principal.LogonType = TASK_LOGON_INTERACTIVE_TOKEN
-    principal.RunLevel = TASK_RUNLEVEL_LUA
+    follow_mode = str(config.get("watcher_mode") or "guardian") == "cloudflared-follow"
+    principal.RunLevel = TASK_RUNLEVEL_HIGHEST if follow_mode else TASK_RUNLEVEL_LUA
 
     trigger = definition.Triggers.Create(TASK_TRIGGER_LOGON)
     trigger.Enabled = True
@@ -233,7 +242,7 @@ def install_task(config: dict[str, Any]) -> None:
     start_task(task_name)
     append_control_log(
         "automation_installed",
-        {"task": task_name, "run_level": "Limited", "watcher_exe": str(watcher_exe)},
+        {"task": task_name, "run_level": "Highest" if follow_mode else "Limited", "watcher_exe": str(watcher_exe)},
     )
 
 
@@ -348,7 +357,7 @@ def update(config: dict[str, Any]) -> None:
         git_pull_ff_only()
         refreshed = load_config()
         install_requirements(refreshed)
-        if bool(refreshed.get("region_priority_enabled", False)):
+        if should_apply_region_policy(refreshed):
             sync_region_policy(refreshed, force_runtime=False)
         install_task(refreshed)
         append_control_log(
@@ -402,7 +411,7 @@ def main() -> int:
     elif args.action == "install":
         install_requirements(config)
         refreshed = load_config()
-        if bool(refreshed.get("region_priority_enabled", False)):
+        if should_apply_region_policy(refreshed):
             had_task = get_task(task_name) is not None
             stop_task(task_name)
             try:
@@ -415,6 +424,11 @@ def main() -> int:
         print(f"AUTOMATION_INSTALLED={task_name}")
     elif args.action == "apply-region-policy":
         install_requirements(config)
+        if not should_apply_region_policy(load_config()):
+            raise RuntimeError(
+                "Region-priority policy is disabled in cloudflared-follow mode; "
+                "switch watcher_mode explicitly before applying it."
+            )
         had_task = get_task(task_name) is not None
         stop_task(task_name)
         try:

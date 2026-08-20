@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import time
 import traceback
 from datetime import datetime
@@ -12,6 +13,7 @@ import pythoncom
 import win32com.client
 
 from check_mcp import measure_mcp
+from cloudflared_follow import detect_follow_reason, restart_service_with_timeout
 from config_loader import LOG_PATH, STATUS_PATH, load_config
 from mihomo_api import auto_group_state, connections, delete_connection, group_delay, version
 
@@ -72,6 +74,100 @@ def tun_up(config: dict) -> bool:
     for row in rows:
         return int(row.NetConnectionStatus or 0) == 2
     return False
+
+
+class WindowsServiceController:
+    def _run(self, command: list[str], timeout: int = 5) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def state(self, name: str) -> tuple[str, int]:
+        safe = name.replace("'", "''")
+        rows = wmi().ExecQuery(f"SELECT State,ProcessId FROM Win32_Service WHERE Name='{safe}'")
+        for row in rows:
+            return str(row.State or "Unknown"), int(row.ProcessId or 0)
+        raise RuntimeError(f"Windows service not found: {name}")
+
+    def stop(self, name: str) -> None:
+        self._run(["sc.exe", "stop", name])
+
+    def start(self, name: str) -> None:
+        self._run(["sc.exe", "start", name])
+
+    def kill(self, pid: int) -> None:
+        self._run(["taskkill.exe", "/PID", str(pid), "/T", "/F"])
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
+def follow_api_state(config: dict) -> dict[str, Any]:
+    pipe = str(config.get("mihomo_pipe") or r"\\.\pipe\verge-mihomo")
+    preferred = str(config.get("follow_group_name") or "飞鸟云")
+    try:
+        meta = version(pipe)
+        group_name, group, path = auto_group_state(pipe, preferred)
+        if group_name != preferred:
+            raise RuntimeError(f"Follow group not found: {preferred}")
+        selected_leaf = path[-1] if path else group.get("now")
+        return {
+            "available": True,
+            "version": meta.get("version"),
+            "group_name": group_name,
+            "group_type": group.get("type"),
+            "selected_group": group.get("now"),
+            "selected_node": selected_leaf,
+            "selection_path": path,
+        }
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+
+def wait_for_stable_follow_node(config: dict, candidate: str) -> tuple[dict[str, Any], str | None, bool]:
+    seconds = max(1, int(config.get("follow_node_debounce_seconds", 8)))
+    max_rounds = max(1, int(config.get("follow_node_debounce_max_rounds", 2)))
+    current_candidate: str | None = candidate
+    api: dict[str, Any] = follow_api_state(config)
+    for round_no in range(1, max_rounds + 1):
+        log_event(
+            "cloudflared_follow_node_wait",
+            candidate_node=current_candidate,
+            round=round_no,
+            max_rounds=max_rounds,
+            seconds=seconds,
+        )
+        time.sleep(seconds)
+        api = follow_api_state(config)
+        observed = api.get("selected_node") if api.get("available") else None
+        if observed == current_candidate:
+            return api, observed, True
+        current_candidate = observed
+        if not current_candidate:
+            return api, current_candidate, False
+    return api, current_candidate, False
+
+
+def restart_cloudflared_follow(config: dict, reason: str) -> dict[str, object]:
+    service_name = str(config.get("cloudflared_service_name") or "Cloudflared")
+    log_event("cloudflared_service_restart_start", reason=reason, service=service_name)
+    result = restart_service_with_timeout(
+        WindowsServiceController(),
+        service_name,
+        stop_timeout_seconds=float(config.get("cloudflared_stop_timeout_seconds", 10)),
+        kill_timeout_seconds=float(config.get("cloudflared_kill_timeout_seconds", 5)),
+        start_timeout_seconds=float(config.get("cloudflared_start_timeout_seconds", 15)),
+        poll_seconds=float(config.get("cloudflared_service_poll_seconds", 0.5)),
+    )
+    settle_seconds = max(0, int(config.get("cloudflared_follow_settle_seconds", 5)))
+    if settle_seconds:
+        time.sleep(settle_seconds)
+    log_event("cloudflared_service_restart_end", reason=reason, service=service_name, **result)
+    return result
 
 
 def api_state(config: dict) -> dict[str, Any]:
@@ -614,16 +710,118 @@ def wait_for_stable_auto_node(config: dict, old_node: str | None, candidate: str
     return api, current_candidate, False
 
 
+def run_cloudflared_follow_watch() -> int:
+    pythoncom.CoInitialize()
+    config = load_config()
+    log_event(
+        "watcher_start",
+        strategy_version=config.get("strategy_version"),
+        machine=config.get("machine_name"),
+        watcher_mode="cloudflared-follow",
+    )
+
+    last_tun = tun_up(config)
+    last_pid = mihomo_pid(config)
+    api = follow_api_state(config) if last_pid else {"available": False, "error": "mihomo process missing"}
+    last_node = api.get("selected_node") if api.get("available") else None
+    write_status(config, "monitoring" if last_tun and last_pid else "waiting", "watcher_start", None, api)
+
+    while True:
+        try:
+            config = load_config()
+            poll_seconds = max(1, int(config.get("poll_seconds", 2)))
+            if not bool(config.get("enabled", True)):
+                api = follow_api_state(config) if mihomo_pid(config) else {"available": False, "error": "mihomo process missing"}
+                write_status(config, "disabled", "config", None, api)
+                time.sleep(poll_seconds)
+                continue
+
+            current_tun = tun_up(config)
+            current_pid = mihomo_pid(config)
+            api = follow_api_state(config) if current_pid else {"available": False, "error": "mihomo process missing"}
+            current_node = api.get("selected_node") if api.get("available") else None
+
+            reason = detect_follow_reason(
+                last_tun=last_tun,
+                current_tun=current_tun,
+                last_pid=last_pid,
+                current_pid=current_pid,
+                last_node=last_node,
+                current_node=current_node,
+            )
+
+            if reason == "manual_node_changed" and current_node:
+                api, current_node, stable = wait_for_stable_follow_node(config, str(current_node))
+                current_tun = tun_up(config)
+                current_pid = mihomo_pid(config)
+                if not stable or current_node == last_node or not current_tun or not current_pid:
+                    log_event(
+                        "cloudflared_follow_event_ignored",
+                        reason=reason,
+                        old_node=last_node,
+                        observed_node=current_node,
+                        stable=stable,
+                        tun_up=current_tun,
+                    )
+                    reason = None
+            elif reason in {"tun_up", "mihomo_pid_changed"}:
+                time.sleep(max(0, int(config.get("stabilize_seconds", 3))))
+                current_tun = tun_up(config)
+                current_pid = mihomo_pid(config)
+                api = follow_api_state(config) if current_pid else {"available": False, "error": "mihomo process missing"}
+                current_node = api.get("selected_node") if api.get("available") else current_node
+                if not current_tun or not current_pid:
+                    reason = None
+
+            if reason:
+                log_event(
+                    "cloudflared_follow_event",
+                    reason=reason,
+                    old_node=last_node,
+                    new_node=current_node,
+                    old_pid=last_pid,
+                    new_pid=current_pid,
+                )
+                restart_cloudflared_follow(config, reason)
+                api = follow_api_state(config) if current_pid else api
+                write_status(config, "monitoring", reason, None, api)
+            else:
+                write_status(config, "monitoring" if current_tun and current_pid else "waiting", "idle", None, api)
+
+            last_tun = current_tun
+            if current_pid:
+                last_pid = current_pid
+            if current_node:
+                last_node = current_node
+            time.sleep(poll_seconds)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            log_event("cloudflared_follow_exception", "ERROR", error=error, trace=traceback.format_exc(limit=6))
+            try:
+                write_status(config, "error", "cloudflared_follow", None, api if isinstance(api, dict) else {}, error)
+            except Exception:
+                pass
+            time.sleep(5)
+
+
 def run_once() -> int:
     config = load_config()
+    if str(config.get("watcher_mode") or "guardian") == "cloudflared-follow":
+        api = follow_api_state(config)
+        result = restart_cloudflared_follow(config, "manual_run")
+        write_status(config, "monitoring", "manual_run", None, api)
+        print(json.dumps({"action": "cloudflared_service_restart", "result": result}, ensure_ascii=True, indent=2))
+        return 0
     measurement, _, action = recover(config, "manual_run")
     print(json.dumps({"action": action, "measurement": measurement}, ensure_ascii=True, indent=2))
     return 0 if measurement.get("ok") else 2
 
 
 def run_watch() -> int:
-    pythoncom.CoInitialize()
     config = load_config()
+    if str(config.get("watcher_mode") or "guardian") == "cloudflared-follow":
+        return run_cloudflared_follow_watch()
+    pythoncom.CoInitialize()
     log_event("watcher_start", strategy_version=config.get("strategy_version"), machine=config.get("machine_name"))
 
     last_tun = tun_up(config)

@@ -7,10 +7,11 @@ python control.py status
 python control.py logs
 python control.py logs --tail 100
 python control.py run
-python control.py apply-region-policy
 ```
 
-`apply-region-policy` repairs/replays the managed `Singapore -> Taiwan fallback` policy for the active Clash Verge subscription. It creates a local ignored backup before replacing the default/managed extension script and hot-reloads Mihomo for immediate effect.
+The default strategy is `v2.3-minimal-follow`. Clash/VPN remains the source of truth for node selection. The watcher only follows TUN/Mihomo/node-path changes and rebuilds Cloudflared when needed.
+
+`apply-region-policy` is intentionally blocked while `watcher_mode=cloudflared-follow`. The legacy managed `Singapore -> Taiwan fallback` strategy remains available only after an explicit mode change.
 
 ## Lifecycle
 
@@ -37,31 +38,30 @@ This uses `git pull --ff-only`. A divergent local branch is intentionally not au
 Healthy example:
 
 ```text
-strategy_version       : v2.2-region-priority
+strategy_version       : v2.3-minimal-follow
 watcher_state          : Running
 phase                  : monitoring
 tun_up                 : True
 mihomo_api             : True
-region_tier            : 新加坡自动
-selection_path         : 自动选择 -> 新加坡自动 -> <leaf Singapore node>
+region_tier            : None
+selection_path         : 飞鸟云 -> <selected leaf node>
 argotunnel_connections : 2 or more
-mcp_ok                 : True
-hot_median_ms          : < threshold
+mcp_ok                 : None
+hot_median_ms          : None
 last_error             : empty
 ```
 
-With the managed region policy, `region_tier=台湾兜底` is expected only when the Singapore policy group is unavailable. If Singapore nodes are healthy and the tier remains Taiwan, inspect `selection_path` and re-run `python control.py apply-region-policy`.
+Follow mode intentionally does not run periodic MCP optimization. Use `python src/check_mcp.py` for an on-demand end-to-end latency check; the operational target is a hot median below 200 ms.
 
 ## Event policy
 
-### URLTest node change
+### Manual/native node change
 
 ```text
 node A -> node B
-→ debounce
-→ real MCP test
-→ healthy: no action
-→ confirmed failure: recovery
+→ 8 s debounce / stability confirmation
+→ restart Cloudflared once
+→ wait for service/tunnel settle
 ```
 
 ### TUN or Mihomo restart
@@ -69,21 +69,18 @@ node A -> node B
 ```text
 TUN up / Mihomo PID changed
 → short settle
-→ real MCP test
-→ confirmed failure only: recovery
+→ restart Cloudflared once
+→ wait for service/tunnel settle
 ```
 
-### Recovery
+### What follow mode never does
 
 ```text
-confirm failure
-→ if invalid subscription-info node: do not migrate Tunnel to it
-→ otherwise rolling-refresh UDP/7844
-→ re-test MCP
-→ optional Mihomo group delay (cooldown protected)
-→ if selected node really changed, rolling refresh again
-→ final read-only settle retries
-→ degraded only after all retries fail
+no proxy-group rewrite
+no region-priority group creation
+no group-wide /group/<name>/delay probe
+no automatic node reselection
+no rolling Argotunnel connection deletion
 ```
 
 ## 502 / 530 / 1033
