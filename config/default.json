@@ -17,8 +17,6 @@
   "cloudflared_start_timeout_seconds": 15,
   "cloudflared_service_poll_seconds": 0.5,
   "cloudflared_follow_settle_seconds": 5,
-  "cloudflared_boot_recovery_enabled": true,
-  "cloudflared_boot_recovery_delay_seconds": 60,
   "mihomo_process_name": "verge-mihomo.exe",
   "tun_adapter_name": "Meta",
   "mihomo_pipe": "\\\\.\\pipe\\verge-mihomo",

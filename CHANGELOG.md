@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### v2.3.3-one-action
+
+- Removed the boot-recovery restart. It restarted Cloudflared unconditionally 60 seconds after every watcher start, including on a fully healthy tunnel, and it needed a forced kill each time. On the day it was reviewed it fired twice and interrupted a working tunnel twice.
+- The case it was written for is already covered: if TUN comes up after the watcher, the loop sees the rising edge and restarts. The residual case, Cloudflared connecting before TUN was ready and staying on a stale path, is now diagnosable in one read-only command, since `doctor` L1 shows an empty `tunnel_chain_nodes` when the connector is not egressing through the proxy at all.
+- Follow mode now performs exactly one automatic action: restart Cloudflared when the followed node changes. Everything else it does is read and report. Removes `cloudflared_boot_recovery_enabled` and `cloudflared_boot_recovery_delay_seconds`.
+
 ### v2.3.2-tunnel-verification
 
 - The watcher now checks that Cloudflared actually registered with the Cloudflare edge after it restarts, instead of treating a `Running` service as success. A connector that starts but never registers serves `530`/`1033` on the public hostname, and that outage was previously invisible: the log recorded a clean restart and `phase` stayed `monitoring`. It now logs `tunnel_ready_check` and writes `phase: degraded` with the node named in `last_error`.

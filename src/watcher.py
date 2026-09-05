@@ -808,13 +808,6 @@ def run_cloudflared_follow_watch() -> int:
     last_node = api.get("selected_node") if api.get("available") else None
     write_status(config, follow_phase(tun=last_tun, pid=last_pid, api=api), "watcher_start", None, api)
 
-    if bool(config.get("cloudflared_boot_recovery_enabled", True)) and last_tun and last_pid:
-        delay = max(0, int(config.get("cloudflared_boot_recovery_delay_seconds", 60)))
-        log_event("cloudflared_boot_recovery_start", delay_seconds=delay)
-        time.sleep(delay)
-        restart_cloudflared_follow(config, "boot_recovery")
-        log_event("cloudflared_boot_recovery_end", reason="boot_recovery", state="Running")
-
     while True:
         try:
             config = load_config()
