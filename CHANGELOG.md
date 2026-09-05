@@ -4,12 +4,13 @@
 
 ### v2.3.2-tunnel-verification
 
-- The watcher now verifies that Cloudflared actually registered with the Cloudflare edge after it restarts, instead of treating a `Running` service as success. A connector that starts but never registers serves `530`/`1033` on the public hostname, and that outage was previously invisible: the log recorded a clean restart and `phase` stayed `monitoring`.
-- If the tunnel does not come back and a previously-proven node exists, that node is restored and the tunnel is rebuilt on it. This restores, it never optimizes: the node chosen is always one already observed carrying the tunnel. A node rolled back once is not rolled back again, so a deliberate second attempt is reported rather than fought over. `tunnel_rollback_enabled` turns it off.
-- When nothing can be restored, `phase` becomes `degraded` and `last_error` names the node and the expected 1033.
+- The watcher now checks that Cloudflared actually registered with the Cloudflare edge after it restarts, instead of treating a `Running` service as success. A connector that starts but never registers serves `530`/`1033` on the public hostname, and that outage was previously invisible: the log recorded a clean restart and `phase` stayed `monitoring`. It now logs `tunnel_ready_check` and writes `phase: degraded` with the node named in `last_error`.
+- It does not try to repair that situation. An earlier draft of this change restored the last node known to carry the tunnel; that was cut. Choosing nodes belongs to the operator, and the transport fix below removed the failure it was written for. Follow mode keeps exactly one automatic action: restart Cloudflared when the node changes.
 - Added `src/cloudflared_service.py`, so the watcher and the doctor share one implementation of service inspection, metrics-endpoint discovery and connector readiness rather than keeping parallel copies.
 - `doctor` L2 now also reports `protocol_flag`, so the configured edge transport is visible next to the observed one.
-- New tracked defaults: `tunnel_ready_timeout_seconds`, `tunnel_rollback_enabled`.
+- New tracked default: `tunnel_ready_timeout_seconds`.
+
+Field note: an exit node that could not carry Cloudflared's default QUIC transport took the hostname down with 1033 while every log line looked healthy. Running the connector with `--protocol http2` fixed it outright, at no measurable latency cost. On a proxied path where UDP is the fragile part, http2 is the better default.
 
 ### v2.3.1-observability
 

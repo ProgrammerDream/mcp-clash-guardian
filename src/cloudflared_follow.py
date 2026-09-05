@@ -75,32 +75,6 @@ def resolve_follow_target(
     return None, "none"
 
 
-def plan_tunnel_recovery(
-    *,
-    ready_connections: int,
-    previous_node: str | None,
-    current_node: str | None,
-    rollback_enabled: bool,
-    can_reselect: bool,
-) -> str:
-    """Decide what to do after Cloudflared was restarted for a node change.
-
-    A restarted service that reports `Running` proves only that the process
-    started. If it never registers a connection with the Cloudflare edge, the
-    public hostname returns 1033 and the outage is total and silent, so a node
-    that cannot carry the tunnel has to be undone rather than left in place.
-
-    Returns one of: healthy, rollback, degraded.
-    """
-    if ready_connections > 0:
-        return "healthy"
-    if not rollback_enabled or not can_reselect:
-        return "degraded"
-    if not previous_node or previous_node == current_node:
-        return "degraded"
-    return "rollback"
-
-
 def stabilize_tun_state(
     *,
     last_stable: bool,

@@ -202,22 +202,6 @@ def group_delay(
     return response.json()
 
 
-def select_proxy(group_name: str, proxy_name: str, pipe: str = DEFAULT_PIPE) -> None:
-    """Point a Selector group at one of its members.
-
-    Follow mode does not use this to optimize anything. It exists only so a
-    node change that leaves the tunnel unable to register can be undone.
-    """
-    body = json.dumps({"name": proxy_name}, ensure_ascii=False).encode("utf-8")
-    response = request(
-        f"/proxies/{quote(group_name, safe='')}", method="PUT", body=body, pipe=pipe
-    )
-    if response.status not in {200, 204}:
-        raise RuntimeError(
-            f"Mihomo select proxy HTTP {response.status}: {response.body[:200]!r}"
-        )
-
-
 def connections(pipe: str = DEFAULT_PIPE) -> dict[str, Any]:
     response = request("/connections", pipe=pipe)
     if response.status != 200:

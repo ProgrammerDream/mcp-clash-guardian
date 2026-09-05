@@ -9,7 +9,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cloudflared_follow import (
     argotunnel_leaf_nodes,
-    plan_tunnel_recovery,
     resolve_follow_target,
     select_argotunnel_connections,
     stabilize_tun_state,
@@ -107,39 +106,6 @@ class StabilizeTunStateTests(unittest.TestCase):
                 last_stable=state, observed=observed, down_streak=streak, required_down=2
             )
             self.assertTrue(state)
-
-
-class PlanTunnelRecoveryTests(unittest.TestCase):
-    def plan(self, **overrides) -> str:
-        kwargs = {
-            "ready_connections": 0,
-            "previous_node": "SG-OK",
-            "current_node": "TW-BAD",
-            "rollback_enabled": True,
-            "can_reselect": True,
-        }
-        kwargs.update(overrides)
-        return plan_tunnel_recovery(**kwargs)
-
-    def test_a_registered_connection_is_all_that_healthy_means(self) -> None:
-        self.assertEqual("healthy", self.plan(ready_connections=1))
-
-    def test_a_node_that_cannot_carry_the_tunnel_is_rolled_back(self) -> None:
-        self.assertEqual("rollback", self.plan())
-
-    def test_no_known_good_node_leaves_the_selection_alone(self) -> None:
-        self.assertEqual("degraded", self.plan(previous_node=None))
-
-    def test_a_node_already_rolled_back_once_is_not_fought_over(self) -> None:
-        # can_reselect goes false for a node the watcher already undid, so a
-        # deliberate second attempt by the operator is reported, not reverted.
-        self.assertEqual("degraded", self.plan(can_reselect=False))
-
-    def test_rollback_can_be_switched_off_entirely(self) -> None:
-        self.assertEqual("degraded", self.plan(rollback_enabled=False))
-
-    def test_restarting_on_the_same_node_has_nothing_to_roll_back_to(self) -> None:
-        self.assertEqual("degraded", self.plan(previous_node="SG-OK", current_node="SG-OK"))
 
 
 class FollowPhaseTests(unittest.TestCase):

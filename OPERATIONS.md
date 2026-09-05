@@ -133,39 +133,25 @@ no node selection for optimization
 no rolling Argotunnel connection deletion
 ```
 
-### The one exception: restoring a node that broke the tunnel
+### After a restart it checks, and says so
 
 A Cloudflared service in state `Running` only means the process started. If it
 never registers with the Cloudflare edge, the public hostname serves `530` with
 a Cloudflare `1033` body, the outage is total, and the log still shows a
-perfectly successful restart. That failure is silent and unattended, and a
-single mis-click in Clash is enough to cause it.
+perfectly successful restart.
 
 So after a restart the watcher waits up to `tunnel_ready_timeout_seconds` for
-`readyConnections` to become non-zero, then:
+`readyConnections` to become non-zero, logs `tunnel_ready_check`, and if it
+stays zero writes `phase: degraded` with the node named in `last_error`.
 
-```text
-ready > 0                       -> healthy; this node is recorded as known-good
-ready == 0, known-good exists   -> restore that node, restart, re-verify
-ready == 0, nothing to restore  -> phase degraded, reason in last_error
-```
+It does not try to repair the situation. Picking nodes belongs to the operator,
+and a watcher that silently puts a different node back is harder to reason about
+than one that tells you which node broke the tunnel. Read the reason, pick a
+node that works.
 
-This restores; it never optimizes. The node it selects is always one already
-proven to carry the tunnel, never a "better" one.
-
-A node that has been rolled back once is not rolled back again: selecting it a
-second time is treated as a deliberate decision, so the watcher reports
-`degraded` and leaves your choice alone. Set `tunnel_rollback_enabled` to
-`false` to switch the behaviour off entirely.
-
-Relevant log events:
-
-```text
-tunnel_ready_baseline       which node was carrying the tunnel at watcher start
-tunnel_ready_check          ready count and verdict after each restart
-tunnel_node_rollback_start  a node change is being undone
-tunnel_node_rollback_end    whether the restore recovered the tunnel
-```
+Read-only checks are cheap and can be generous. Every automatic *action* is a
+new way for the thing to fail while nobody is watching, so follow mode keeps
+exactly one: restart Cloudflared when the node changes.
 
 ## 502 / 530 / 1033
 
