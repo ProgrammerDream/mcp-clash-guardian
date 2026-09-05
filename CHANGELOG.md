@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### v2.3.1-observability
+
+- Added `python control.py doctor`: a read-only, five-layer diagnosis (exit, tunnel, origin, edge, guardian) that names the first failing layer instead of leaving the operator to probe each hop by hand. `--json` for machine-readable output; exit code `2` when any layer fails.
+- `doctor` runs without a complete `config/local.json`, so a half-built machine gets findings rather than a crash.
+- The watcher no longer goes blind when the configured follow group is missing. `follow_group_name` is now the intent; the live Argotunnel connection chains are the fallback, and `follow_source` records which one was used.
+- `phase` reports `degraded` when the follow target cannot be resolved. It previously reported `monitoring` while the watcher had no target at all.
+- TUN state now debounces its falling edge (`tun_down_confirmations`, default 2 polls). A single missing WMI adapter row used to flip TUN down and back up, and that synthetic rising edge restarted Cloudflared for nothing.
+- Follow mode now refuses to restart Cloudflared onto an entry matching `invalid_node_patterns`. The patterns existed but were only consulted in guardian mode, so a subscription placeholder such as a remaining-quota line could become the tunnel path.
+- Argotunnel connection selection and chain-leaf extraction moved into pure functions shared by the watcher and the doctor, so both use one definition of "this is a tunnel connection".
+- Console output no longer dies on a legacy code page: node names carrying emoji used to raise `UnicodeEncodeError` and kill `status` / `logs`. Redirected output is now UTF-8; an interactive console keeps its own code page.
+- New tracked defaults: `origin_base_url`, `expected_ready_connections`, `status_stale_seconds`, `tun_down_confirmations`, `cloudflared_metrics`.
+
 ### v2.3-minimal-follow
 
 - Replaced the default network-control strategy with a minimal Cloudflared follow mode: Clash/VPN node selection stays native/manual, while the watcher only reacts to TUN-up, Mihomo restart, or a stable selected-node change.

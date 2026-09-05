@@ -1,7 +1,100 @@
 from __future__ import annotations
 
 import time
-from typing import Protocol
+from collections.abc import Iterable, Sequence
+from typing import Any, Protocol
+
+DEFAULT_ARGOTUNNEL_NETWORKS = ("udp",)
+
+
+def select_argotunnel_connections(
+    payload: dict[str, Any] | None,
+    *,
+    port: str | int = 7844,
+    host_suffix: str = "argotunnel.com",
+    networks: Iterable[str] = DEFAULT_ARGOTUNNEL_NETWORKS,
+) -> list[dict[str, Any]]:
+    """Pick the Mihomo connections that carry the Cloudflared tunnel.
+
+    Pure so both the watcher and the doctor share one definition of "this is a
+    tunnel connection" instead of drifting apart.
+    """
+    accepted = {str(value).lower() for value in networks}
+    wanted_port = str(port)
+    suffix = str(host_suffix).lower()
+    result: list[dict[str, Any]] = []
+    for item in (payload or {}).get("connections", []) or []:
+        metadata = item.get("metadata") or {}
+        host = str(metadata.get("host") or "").lower()
+        geo = metadata.get("destinationGeoIP") or []
+        if isinstance(geo, str):
+            geo = [geo]
+        is_cloudflare = any(str(value).lower() == "cloudflare" for value in geo)
+        if (
+            str(metadata.get("network") or "").lower() in accepted
+            and str(metadata.get("destinationPort") or "") == wanted_port
+            and (host.endswith(suffix) or is_cloudflare)
+        ):
+            result.append(item)
+    return result
+
+
+def argotunnel_leaf_nodes(items: Iterable[dict[str, Any]]) -> list[str]:
+    """Leaf proxy of every tunnel connection, in Mihomo's chain order.
+
+    Mihomo reports `chains` outermost-last, so `chains[0]` is the proxy that
+    actually egresses. This is ground truth: it is where the tunnel is, not
+    where a policy group says it should be.
+    """
+    nodes: list[str] = []
+    for item in items:
+        chains = item.get("chains") or []
+        if chains:
+            nodes.append(str(chains[0]))
+    return nodes
+
+
+def resolve_follow_target(
+    *,
+    group_node: str | None,
+    chain_nodes: Sequence[str],
+) -> tuple[str | None, str]:
+    """Decide which node Cloudflared should be following, and say where it came from.
+
+    The configured policy group is the intent, but subscriptions rename and drop
+    groups, so a missing group must not blind the watcher. The tunnel's own
+    chains are the fallback because they cannot be stale by construction.
+    """
+    if group_node:
+        return group_node, "group"
+    unique = {node for node in chain_nodes if node}
+    if len(unique) == 1:
+        return next(iter(unique)), "argotunnel_chain"
+    if unique:
+        return None, "argotunnel_chain_mixed"
+    return None, "none"
+
+
+def stabilize_tun_state(
+    *,
+    last_stable: bool,
+    observed: bool,
+    down_streak: int,
+    required_down: int,
+) -> tuple[bool, int]:
+    """Debounce the TUN adapter's falling edge.
+
+    `tun_up` reads WMI, which momentarily reports no adapter row while Windows
+    re-enumerates. A single false reading used to flip the state down and the
+    next poll flipped it back up, and that rising edge restarted Cloudflared for
+    nothing. Only a sustained absence counts as down; up is always immediate.
+    """
+    if observed:
+        return True, 0
+    streak = down_streak + 1
+    if streak >= max(1, required_down):
+        return False, streak
+    return last_stable, streak
 
 
 class ServiceController(Protocol):

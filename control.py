@@ -23,6 +23,7 @@ REQUIREMENTS_PATH = ROOT / "requirements.txt"
 
 sys.path.insert(0, str(SRC_DIR))
 from config_loader import load_config  # noqa: E402
+from console import print_line  # noqa: E402
 
 TASK_STATE = {
     0: "Unknown",
@@ -280,6 +281,7 @@ def status_dict(config: dict[str, Any]) -> dict[str, Any]:
         "region_tier": region_tier,
         "selection_path": " -> ".join(selection_path) if selection_path else None,
         "selected_node": status.get("selected_node"),
+        "follow_source": status.get("follow_source"),
         "argotunnel_connections": status.get("argotunnel_connection_count"),
         "mcp_ok": status.get("mcp_ok"),
         "mcp_health_class": status.get("mcp_health_class"),
@@ -296,7 +298,7 @@ def print_status(config: dict[str, Any]) -> None:
     data = status_dict(config)
     width = max(len(key) for key in data)
     for key, value in data.items():
-        print(f"{key:<{width}} : {value}")
+        print_line(f"{key:<{width}} : {value}")
 
 
 def show_logs(tail: int) -> None:
@@ -305,7 +307,28 @@ def show_logs(tail: int) -> None:
         return
     with LOG_PATH.open("r", encoding="utf-8-sig", errors="replace") as handle:
         for line in deque(handle, maxlen=max(1, tail)):
-            print(line.rstrip())
+            print_line(line.rstrip())
+
+
+def run_doctor_action(as_json: bool = False) -> int:
+    """Diagnose the whole path without requiring a complete local config.
+
+    A half-built machine is exactly when this is most useful, so a missing or
+    incomplete `config/local.json` has to be a finding, not a crash.
+    """
+    from doctor import FAIL, print_report, run_doctor
+
+    try:
+        config = load_config()
+    except Exception as exc:
+        config = load_config(require_local=False)
+        config["local_config_error"] = str(exc)
+    report = run_doctor(config)
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print_report(report)
+    return 2 if report["verdict"] == FAIL else 0
 
 
 def run_once(config: dict[str, Any]) -> None:
@@ -378,12 +401,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="MCP Clash Guardian control plane")
     parser.add_argument(
         "action",
-        choices=["status", "logs", "start", "stop", "run", "install", "apply-region-policy", "uninstall", "rollback", "update"],
+        choices=["status", "doctor", "logs", "start", "stop", "run", "install", "apply-region-policy", "uninstall", "rollback", "update"],
         nargs="?",
         default="status",
     )
     parser.add_argument("--tail", type=int, default=30)
+    parser.add_argument("--json", action="store_true", help="machine-readable output (doctor only)")
     args = parser.parse_args()
+
+    if args.action == "doctor":
+        return run_doctor_action(as_json=args.json)
 
     config = load_config()
     bootstrap_exit = bootstrap_runtime_python(config)

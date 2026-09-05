@@ -13,12 +13,21 @@ import pythoncom
 import win32com.client
 
 from check_mcp import measure_mcp
-from cloudflared_follow import detect_follow_reason, restart_service_with_timeout
+from cloudflared_follow import (
+    argotunnel_leaf_nodes,
+    detect_follow_reason,
+    resolve_follow_target,
+    restart_service_with_timeout,
+    select_argotunnel_connections,
+    stabilize_tun_state,
+)
 from config_loader import LOG_PATH, STATUS_PATH, load_config
 from mihomo_api import auto_group_state, connections, delete_connection, group_delay, version
 
 _wmi = None
 _last_reselect_monotonic = 0.0
+ARGOTUNNEL_RECOVERY_NETWORKS = frozenset({"udp"})
+ARGOTUNNEL_STATUS_NETWORKS = frozenset({"udp", "tcp"})
 
 
 def now_text() -> str:
@@ -106,26 +115,74 @@ class WindowsServiceController:
         time.sleep(seconds)
 
 
+def follow_phase(*, tun: bool, pid: int | None, api: dict[str, Any]) -> str:
+    """The strongest claim the watcher can honestly make right now.
+
+    `monitoring` used to be written whenever TUN and Mihomo were up, even while
+    the follow target was unresolvable. That made a blind watcher look healthy.
+    """
+    if not tun or not pid:
+        return "waiting"
+    if not api.get("available"):
+        return "degraded"
+    return "monitoring"
+
+
 def follow_api_state(config: dict) -> dict[str, Any]:
+    """Resolve which node Cloudflared should be following, and say how we know.
+
+    The configured policy group is only the intent. Subscription updates rename
+    and drop groups, and a missing group used to raise, leaving the watcher with
+    no node at all. The tunnel's own chains cannot be stale by construction, so
+    they are the fallback: a missing group now degrades the source, not the
+    watcher.
+    """
     pipe = str(config.get("mihomo_pipe") or r"\\.\pipe\verge-mihomo")
-    preferred = str(config.get("follow_group_name") or "飞鸟云")
+    preferred = str(config.get("follow_group_name") or "")
+    state: dict[str, Any] = {"follow_group_name": preferred}
+
     try:
-        meta = version(pipe)
-        group_name, group, path = auto_group_state(pipe, preferred)
-        if group_name != preferred:
-            raise RuntimeError(f"Follow group not found: {preferred}")
-        selected_leaf = path[-1] if path else group.get("now")
-        return {
-            "available": True,
-            "version": meta.get("version"),
-            "group_name": group_name,
-            "group_type": group.get("type"),
-            "selected_group": group.get("now"),
-            "selected_node": selected_leaf,
-            "selection_path": path,
-        }
+        state["version"] = version(pipe).get("version")
     except Exception as exc:
-        return {"available": False, "error": str(exc)}
+        return {
+            "available": False,
+            "error": str(exc),
+            "follow_group_name": preferred,
+            "follow_source": "none",
+        }
+
+    group_node: str | None = None
+    try:
+        group_name, group, path = auto_group_state(pipe, preferred or None)
+        if not preferred or group_name == preferred:
+            group_node = path[-1] if path else group.get("now")
+            state.update(
+                {
+                    "group_name": group_name,
+                    "group_type": group.get("type"),
+                    "selected_group": group.get("now"),
+                    "selection_path": path,
+                }
+            )
+        else:
+            state["group_missing"] = preferred
+    except Exception as exc:
+        state["group_error"] = str(exc)
+
+    try:
+        chain_nodes = argotunnel_chain_nodes(config, networks=ARGOTUNNEL_STATUS_NETWORKS)
+    except Exception as exc:
+        chain_nodes = []
+        state["chain_error"] = str(exc)
+    state["argotunnel_chain_nodes"] = chain_nodes
+
+    node, source = resolve_follow_target(group_node=group_node, chain_nodes=chain_nodes)
+    state["selected_node"] = node
+    state["follow_source"] = source
+    state["available"] = node is not None
+    if node is None:
+        state.setdefault("error", f"no follow target resolved (source={source})")
+    return state
 
 
 def wait_for_stable_follow_node(config: dict, candidate: str) -> tuple[dict[str, Any], str | None, bool]:
@@ -239,35 +296,32 @@ def confirm_unhealthy(config: dict, reason: str, measurement: dict) -> dict:
     return measurement
 
 
-def argotunnel_connections(config: dict) -> list[dict[str, Any]]:
+def argotunnel_connections(
+    config: dict,
+    *,
+    networks: frozenset[str] = ARGOTUNNEL_RECOVERY_NETWORKS,
+) -> list[dict[str, Any]]:
+    """Return matching Cloudflared connections for the requested transports.
+
+    Recovery callers intentionally retain the UDP-only default because the
+    guardian rolling refresh was designed to replace QUIC paths. Status callers
+    may also observe TCP/7844, which Cloudflared uses for HTTP/2 transport.
+    """
     pipe = str(config.get("mihomo_pipe") or r"\\.\pipe\verge-mihomo")
-    port = str(config.get("argotunnel_port", 7844))
-    suffix = str(config.get("argotunnel_host_suffix", "argotunnel.com")).lower()
-    payload = connections(pipe)
-    result: list[dict[str, Any]] = []
-    for item in payload.get("connections", []) or []:
-        metadata = item.get("metadata") or {}
-        host = str(metadata.get("host") or "").lower()
-        geo = metadata.get("destinationGeoIP") or []
-        if isinstance(geo, str):
-            geo = [geo]
-        is_cloudflare = any(str(value).lower() == "cloudflare" for value in geo)
-        if (
-            str(metadata.get("network") or "").lower() == "udp"
-            and str(metadata.get("destinationPort") or "") == port
-            and (host.endswith(suffix) or is_cloudflare)
-        ):
-            result.append(item)
-    return result
+    return select_argotunnel_connections(
+        connections(pipe),
+        port=config.get("argotunnel_port", 7844),
+        host_suffix=config.get("argotunnel_host_suffix", "argotunnel.com"),
+        networks=networks,
+    )
 
 
-def argotunnel_chain_nodes(config: dict) -> list[str]:
-    nodes: list[str] = []
-    for item in argotunnel_connections(config):
-        chains = item.get("chains") or []
-        if chains:
-            nodes.append(str(chains[0]))
-    return nodes
+def argotunnel_chain_nodes(
+    config: dict,
+    *,
+    networks: frozenset[str] = ARGOTUNNEL_RECOVERY_NETWORKS,
+) -> list[str]:
+    return argotunnel_leaf_nodes(argotunnel_connections(config, networks=networks))
 
 
 def argotunnel_chain_mismatch(config: dict, selected_node: str | None) -> tuple[bool, list[str]]:
@@ -405,7 +459,11 @@ def write_status(
     last_error: str = "",
 ) -> None:
     try:
-        argotunnel_count = len(argotunnel_connections(config)) if (api or {}).get("available") else None
+        argotunnel_count = (
+            len(argotunnel_connections(config, networks=ARGOTUNNEL_STATUS_NETWORKS))
+            if (api or {}).get("available")
+            else None
+        )
     except Exception:
         argotunnel_count = None
     status = {
@@ -421,6 +479,8 @@ def write_status(
         "mihomo_pid": mihomo_pid(config),
         "mihomo_api": api or {},
         "selected_node": (api or {}).get("selected_node"),
+        "follow_source": (api or {}).get("follow_source"),
+        "follow_group_name": (api or {}).get("follow_group_name"),
         "argotunnel_connection_count": argotunnel_count,
         "mcp_ok": (measurement or {}).get("ok"),
         "mcp_health_class": (measurement or {}).get("health_class"),
@@ -721,10 +781,11 @@ def run_cloudflared_follow_watch() -> int:
     )
 
     last_tun = tun_up(config)
+    tun_down_streak = 0
     last_pid = mihomo_pid(config)
     api = follow_api_state(config) if last_pid else {"available": False, "error": "mihomo process missing"}
     last_node = api.get("selected_node") if api.get("available") else None
-    write_status(config, "monitoring" if last_tun and last_pid else "waiting", "watcher_start", None, api)
+    write_status(config, follow_phase(tun=last_tun, pid=last_pid, api=api), "watcher_start", None, api)
 
     if bool(config.get("cloudflared_boot_recovery_enabled", True)) and last_tun and last_pid:
         delay = max(0, int(config.get("cloudflared_boot_recovery_delay_seconds", 60)))
@@ -737,13 +798,19 @@ def run_cloudflared_follow_watch() -> int:
         try:
             config = load_config()
             poll_seconds = max(1, int(config.get("poll_seconds", 2)))
+            required_down = int(config.get("tun_down_confirmations", 2))
             if not bool(config.get("enabled", True)):
                 api = follow_api_state(config) if mihomo_pid(config) else {"available": False, "error": "mihomo process missing"}
                 write_status(config, "disabled", "config", None, api)
                 time.sleep(poll_seconds)
                 continue
 
-            current_tun = tun_up(config)
+            current_tun, tun_down_streak = stabilize_tun_state(
+                last_stable=last_tun,
+                observed=tun_up(config),
+                down_streak=tun_down_streak,
+                required_down=required_down,
+            )
             current_pid = mihomo_pid(config)
             api = follow_api_state(config) if current_pid else {"available": False, "error": "mihomo process missing"}
             current_node = api.get("selected_node") if api.get("available") else None
@@ -759,7 +826,12 @@ def run_cloudflared_follow_watch() -> int:
 
             if reason == "manual_node_changed" and current_node:
                 api, current_node, stable = wait_for_stable_follow_node(config, str(current_node))
-                current_tun = tun_up(config)
+                current_tun, tun_down_streak = stabilize_tun_state(
+                    last_stable=current_tun,
+                    observed=tun_up(config),
+                    down_streak=tun_down_streak,
+                    required_down=required_down,
+                )
                 current_pid = mihomo_pid(config)
                 if not stable or current_node == last_node or not current_tun or not current_pid:
                     log_event(
@@ -773,12 +845,30 @@ def run_cloudflared_follow_watch() -> int:
                     reason = None
             elif reason in {"tun_up", "mihomo_pid_changed"}:
                 time.sleep(max(0, int(config.get("stabilize_seconds", 3))))
-                current_tun = tun_up(config)
+                current_tun, tun_down_streak = stabilize_tun_state(
+                    last_stable=current_tun,
+                    observed=tun_up(config),
+                    down_streak=tun_down_streak,
+                    required_down=required_down,
+                )
                 current_pid = mihomo_pid(config)
                 api = follow_api_state(config) if current_pid else {"available": False, "error": "mihomo process missing"}
                 current_node = api.get("selected_node") if api.get("available") else current_node
                 if not current_tun or not current_pid:
                     reason = None
+
+            if reason and invalid_auto_node(config, current_node):
+                # Rebuilding the tunnel onto a subscription placeholder would take
+                # the path down rather than move it.
+                log_event(
+                    "cloudflared_follow_event_ignored",
+                    "WARN",
+                    reason=reason,
+                    old_node=last_node,
+                    observed_node=current_node,
+                    cause="selected entry is a subscription placeholder, not a proxy",
+                )
+                reason = None
 
             if reason:
                 log_event(
@@ -788,12 +878,13 @@ def run_cloudflared_follow_watch() -> int:
                     new_node=current_node,
                     old_pid=last_pid,
                     new_pid=current_pid,
+                    follow_source=api.get("follow_source"),
                 )
                 restart_cloudflared_follow(config, reason)
                 api = follow_api_state(config) if current_pid else api
-                write_status(config, "monitoring", reason, None, api)
+                write_status(config, follow_phase(tun=current_tun, pid=current_pid, api=api), reason, None, api)
             else:
-                write_status(config, "monitoring" if current_tun and current_pid else "waiting", "idle", None, api)
+                write_status(config, follow_phase(tun=current_tun, pid=current_pid, api=api), "idle", None, api)
 
             last_tun = current_tun
             if current_pid:
