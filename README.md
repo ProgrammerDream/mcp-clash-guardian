@@ -138,6 +138,16 @@ python control.py apply-region-policy
 
 The command backs up the active Clash Verge subscription extension script plus profile/runtime metadata under ignored `runtime/backups/`, installs the managed extension script for persistence, hot-reloads Mihomo for immediate effect, and verifies the nested selection path. Existing non-default custom extension scripts are not overwritten automatically.
 
+For management endpoints that must bypass the Windows TUN at the physical interface, add only verified host CIDRs to the ignored machine-local config:
+
+```json
+"region_priority_route_exclude_addresses": [
+  "203.0.113.10/32"
+]
+```
+
+The managed extension and runtime transformer merge these values into Mihomo `tun.route-exclude-address`. Use `/32` or `/128` entries for specific administration hosts; broad networks can bypass the intended proxy policy.
+
 ## Health policy
 
 Default policy lives in `config/default.json`.

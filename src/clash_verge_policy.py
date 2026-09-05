@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import shutil
@@ -79,6 +80,16 @@ def _default_noop_script(text: str) -> bool:
 
 
 def _policy_values(config: dict[str, Any]) -> dict[str, Any]:
+    configured_routes = config.get("region_priority_route_exclude_addresses") or []
+    if isinstance(configured_routes, str):
+        configured_routes = [configured_routes]
+    if not isinstance(configured_routes, (list, tuple)):
+        raise RuntimeError("region_priority_route_exclude_addresses must be a list")
+    route_exclude_addresses: list[str] = []
+    for value in configured_routes:
+        rendered = str(ipaddress.ip_network(str(value).strip(), strict=False))
+        if rendered not in route_exclude_addresses:
+            route_exclude_addresses.append(rendered)
     return {
         "autoGroup": str(config.get("auto_group_name") or "自动选择"),
         "primaryGroup": str(config.get("region_priority_primary_group") or "新加坡自动"),
@@ -93,12 +104,13 @@ def _policy_values(config: dict[str, Any]) -> dict[str, Any]:
         "maxFailedTimes": int(config.get("region_priority_max_failed_times", 2)),
         "expectedStatus": int(config.get("mihomo_healthcheck_expected_status", 204)),
         "invalidPatterns": [str(value) for value in config.get("invalid_node_patterns", []) or []],
+        "routeExcludeAddresses": route_exclude_addresses,
     }
 
 
 def render_managed_script(config: dict[str, Any]) -> str:
     policy_json = json.dumps(_policy_values(config), ensure_ascii=False, separators=(",", ":"))
-    return f"""// {MANAGED_MARKER}\n// Managed by mcp-clash-guardian. Machine-specific secrets are never embedded here.\nconst POLICY = {policy_json};\n\nfunction main(config, profileName) {{\n  const groups = Array.isArray(config[\"proxy-groups\"]) ? config[\"proxy-groups\"] : [];\n  const proxyNames = (Array.isArray(config.proxies) ? config.proxies : [])\n    .map((item) => item && item.name)\n    .filter((name) => typeof name === \"string\" && name.length > 0);\n  const invalid = (name) => {{\n    const lower = name.toLowerCase();\n    return POLICY.invalidPatterns.some((value) => lower.includes(String(value).toLowerCase()));\n  }};\n  const primaryRe = new RegExp(POLICY.primaryRegex, \"i\");\n  const fallbackRe = new RegExp(POLICY.fallbackRegex, \"i\");\n  const primary = proxyNames.filter((name) => !invalid(name) && primaryRe.test(name));\n  const fallback = proxyNames.filter((name) => !invalid(name) && fallbackRe.test(name));\n\n  // Fail open: never destroy a working subscription if the naming convention changes.\n  if (primary.length === 0) return config;\n\n  const existingAuto = groups.find((group) => group && group.name === POLICY.autoGroup) || {{}};\n  const primaryGroup = {{\n    name: POLICY.primaryGroup,\n    type: \"url-test\",\n    proxies: primary,\n    url: POLICY.testUrl,\n    interval: POLICY.urltestInterval,\n    tolerance: POLICY.urltestTolerance,\n    lazy: false,\n    timeout: POLICY.timeout,\n    \"max-failed-times\": POLICY.maxFailedTimes,\n    \"expected-status\": POLICY.expectedStatus,\n  }};\n  const fallbackGroup = {{\n    name: POLICY.fallbackGroup,\n    type: \"url-test\",\n    proxies: fallback,\n    url: POLICY.testUrl,\n    interval: POLICY.urltestInterval,\n    tolerance: POLICY.urltestTolerance,\n    lazy: false,\n    timeout: POLICY.timeout,\n    \"max-failed-times\": POLICY.maxFailedTimes,\n    \"expected-status\": POLICY.expectedStatus,\n  }};\n  const autoGroup = {{\n    ...existingAuto,\n    name: POLICY.autoGroup,\n    type: \"fallback\",\n    proxies: fallback.length > 0\n      ? [POLICY.primaryGroup, POLICY.fallbackGroup]\n      : [POLICY.primaryGroup],\n    url: POLICY.testUrl,\n    interval: POLICY.fallbackInterval,\n    lazy: false,\n    timeout: POLICY.timeout,\n    \"max-failed-times\": POLICY.maxFailedTimes,\n    \"expected-status\": POLICY.expectedStatus,\n  }};\n  for (const key of [\"tolerance\", \"use\", \"filter\", \"exclude-filter\", \"include-all\", \"include-all-proxies\", \"include-all-providers\"]) {{\n    delete autoGroup[key];\n  }}\n\n  const managedNames = new Set([POLICY.primaryGroup, POLICY.fallbackGroup, POLICY.autoGroup]);\n  const nextGroups = [];\n  let inserted = false;\n  for (const group of groups) {{\n    if (!group || managedNames.has(group.name)) {{\n      if (group && group.name === POLICY.autoGroup && !inserted) {{\n        nextGroups.push(primaryGroup);\n        if (fallback.length > 0) nextGroups.push(fallbackGroup);\n        nextGroups.push(autoGroup);\n        inserted = true;\n      }}\n      continue;\n    }}\n    nextGroups.push(group);\n  }}\n  if (!inserted) {{\n    nextGroups.unshift(primaryGroup, ...(fallback.length > 0 ? [fallbackGroup] : []), autoGroup);\n  }}\n  config[\"proxy-groups\"] = nextGroups;\n  return config;\n}}\n"""
+    return f"""// {MANAGED_MARKER}\n// Managed by mcp-clash-guardian. Machine-specific secrets are never embedded here.\nconst POLICY = {policy_json};\n\nfunction main(config, profileName) {{\n  config.tun = Object.assign({{}}, config.tun || {{}});\n  const routeExclude = Array.isArray(config.tun[\"route-exclude-address\"])\n    ? config.tun[\"route-exclude-address\"].map(String)\n    : [];\n  config.tun[\"route-exclude-address\"] = Array.from(new Set(routeExclude.concat(POLICY.routeExcludeAddresses)));\n  const groups = Array.isArray(config[\"proxy-groups\"]) ? config[\"proxy-groups\"] : [];\n  const proxyNames = (Array.isArray(config.proxies) ? config.proxies : [])\n    .map((item) => item && item.name)\n    .filter((name) => typeof name === \"string\" && name.length > 0);\n  const invalid = (name) => {{\n    const lower = name.toLowerCase();\n    return POLICY.invalidPatterns.some((value) => lower.includes(String(value).toLowerCase()));\n  }};\n  const primaryRe = new RegExp(POLICY.primaryRegex, \"i\");\n  const fallbackRe = new RegExp(POLICY.fallbackRegex, \"i\");\n  const primary = proxyNames.filter((name) => !invalid(name) && primaryRe.test(name));\n  const fallback = proxyNames.filter((name) => !invalid(name) && fallbackRe.test(name));\n\n  // Fail open: never destroy a working subscription if the naming convention changes.\n  if (primary.length === 0) return config;\n\n  const existingAuto = groups.find((group) => group && group.name === POLICY.autoGroup) || {{}};\n  const primaryGroup = {{\n    name: POLICY.primaryGroup,\n    type: \"url-test\",\n    proxies: primary,\n    url: POLICY.testUrl,\n    interval: POLICY.urltestInterval,\n    tolerance: POLICY.urltestTolerance,\n    lazy: false,\n    timeout: POLICY.timeout,\n    \"max-failed-times\": POLICY.maxFailedTimes,\n    \"expected-status\": POLICY.expectedStatus,\n  }};\n  const fallbackGroup = {{\n    name: POLICY.fallbackGroup,\n    type: \"url-test\",\n    proxies: fallback,\n    url: POLICY.testUrl,\n    interval: POLICY.urltestInterval,\n    tolerance: POLICY.urltestTolerance,\n    lazy: false,\n    timeout: POLICY.timeout,\n    \"max-failed-times\": POLICY.maxFailedTimes,\n    \"expected-status\": POLICY.expectedStatus,\n  }};\n  const autoGroup = {{\n    ...existingAuto,\n    name: POLICY.autoGroup,\n    type: \"fallback\",\n    proxies: fallback.length > 0\n      ? [POLICY.primaryGroup, POLICY.fallbackGroup]\n      : [POLICY.primaryGroup],\n    url: POLICY.testUrl,\n    interval: POLICY.fallbackInterval,\n    lazy: false,\n    timeout: POLICY.timeout,\n    \"max-failed-times\": POLICY.maxFailedTimes,\n    \"expected-status\": POLICY.expectedStatus,\n  }};\n  for (const key of [\"tolerance\", \"use\", \"filter\", \"exclude-filter\", \"include-all\", \"include-all-proxies\", \"include-all-providers\"]) {{\n    delete autoGroup[key];\n  }}\n\n  const managedNames = new Set([POLICY.primaryGroup, POLICY.fallbackGroup, POLICY.autoGroup]);\n  const nextGroups = [];\n  let inserted = false;\n  for (const group of groups) {{\n    if (!group || managedNames.has(group.name)) {{\n      if (group && group.name === POLICY.autoGroup && !inserted) {{\n        nextGroups.push(primaryGroup);\n        if (fallback.length > 0) nextGroups.push(fallbackGroup);\n        nextGroups.push(autoGroup);\n        inserted = true;\n      }}\n      continue;\n    }}\n    nextGroups.push(group);\n  }}\n  if (!inserted) {{\n    nextGroups.unshift(primaryGroup, ...(fallback.length > 0 ? [fallbackGroup] : []), autoGroup);\n  }}\n  config[\"proxy-groups\"] = nextGroups;\n  return config;\n}}\n"""
 
 
 def _backup_files(root: Path, script_path: Path) -> Path:
@@ -162,6 +174,12 @@ def _matches_region(name: str, regex: re.Pattern[str], invalid_patterns: list[st
 
 def transform_runtime_config(config: dict[str, Any], runtime: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     values = _policy_values(config)
+    tun = dict(runtime.get("tun") or {})
+    current_route_exclude = [str(value) for value in tun.get("route-exclude-address") or []]
+    tun["route-exclude-address"] = list(
+        dict.fromkeys(current_route_exclude + list(values["routeExcludeAddresses"]))
+    )
+    runtime["tun"] = tun
     names = _valid_proxy_names(runtime)
     primary_re = re.compile(values["primaryRegex"], re.IGNORECASE)
     fallback_re = re.compile(values["fallbackRegex"], re.IGNORECASE)
@@ -252,6 +270,7 @@ def transform_runtime_config(config: dict[str, Any], runtime: dict[str, Any]) ->
         "fallback_count": len(fallback),
         "primary_nodes": primary,
         "fallback_nodes": fallback,
+        "route_exclude_addresses": list(values["routeExcludeAddresses"]),
     }
 
 
