@@ -6,6 +6,8 @@
   "follow_node_debounce_seconds": 8,
   "follow_node_debounce_max_rounds": 2,
   "tun_down_confirmations": 2,
+  "tunnel_ready_timeout_seconds": 45,
+  "tunnel_rollback_enabled": true,
   "origin_base_url": "http://127.0.0.1:28766",
   "expected_ready_connections": 4,
   "status_stale_seconds": 120,

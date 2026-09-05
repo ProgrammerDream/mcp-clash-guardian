@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import http.client
 import json
-import shlex
 import statistics
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +26,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from cloudflared_follow import argotunnel_leaf_nodes, select_argotunnel_connections
+from cloudflared_service import http_json, metrics_endpoint, service_info
 from config_loader import LOCAL_CONFIG_PATH, STATUS_PATH
 from console import print_line
 
@@ -240,76 +239,6 @@ def check_exit(config: dict) -> dict[str, Any]:
     return layer("L1", title, state, detail, notes, fix)
 
 
-def _service_info(name: str) -> dict[str, Any]:
-    safe = name.replace("'", "''")
-    rows = _wmi().ExecQuery(
-        f"SELECT State,ProcessId,PathName,StartMode FROM Win32_Service WHERE Name='{safe}'"
-    )
-    for row in rows:
-        raw = str(row.PathName or "")
-        argv = [token.strip('"') for token in shlex.split(raw, posix=False)]
-        info: dict[str, Any] = {
-            "state": str(row.State or ""),
-            "start_mode": str(row.StartMode or ""),
-            "pid": int(row.ProcessId or 0),
-            "exe": argv[0] if argv else "",
-        }
-
-        def flag_value(flag: str) -> str | None:
-            for index, token in enumerate(argv):
-                if token == flag and index + 1 < len(argv):
-                    return argv[index + 1]
-                if token.startswith(flag + "="):
-                    return token.split("=", 1)[1]
-            return None
-
-        info["metrics_flag"] = flag_value("--metrics")
-        token_file = flag_value("--token-file")
-        if token_file:
-            # A path is safe to print and is exactly what a rebuild has to carry.
-            info["credential"] = "token-file"
-            info["token_file"] = token_file
-        elif any(token == "--token" or token.startswith("--token=") for token in argv):
-            info["credential"] = "inline-token"
-        elif flag_value("--config"):
-            info["credential"] = "config-file"
-            info["config_file"] = flag_value("--config")
-        else:
-            info["credential"] = "unknown"
-        return info
-    raise RuntimeError(f"Windows service not found: {name}")
-
-
-def _listening_endpoint(pid: int) -> str | None:
-    try:
-        text = subprocess.run(
-            ["netstat.exe", "-ano", "-p", "TCP"],
-            capture_output=True,
-            text=True,
-            timeout=25,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        ).stdout
-    except Exception:
-        return None
-    for line in text.splitlines():
-        parts = line.split()
-        if len(parts) >= 5 and parts[3] == "LISTENING" and parts[4] == str(pid):
-            if parts[1].startswith("127.0.0.1:"):
-                return parts[1]
-    return None
-
-
-def _http_json(endpoint: str, path: str, timeout: float = 8.0) -> Any:
-    host, _, port = endpoint.partition(":")
-    conn = http.client.HTTPConnection(host, int(port or 80), timeout=timeout)
-    try:
-        conn.request("GET", path)
-        response = conn.getresponse()
-        return json.loads(response.read().decode("utf-8"))
-    finally:
-        conn.close()
-
-
 def check_tunnel(config: dict) -> dict[str, Any]:
     title = "tunnel    Cloudflared connector"
     service_name = str(config.get("cloudflared_service_name") or "Cloudflared")
@@ -317,7 +246,7 @@ def check_tunnel(config: dict) -> dict[str, Any]:
     notes: list[str] = []
 
     try:
-        info = _service_info(service_name)
+        info = service_info(service_name)
     except Exception as exc:
         return layer(
             "L2",
@@ -339,11 +268,7 @@ def check_tunnel(config: dict) -> dict[str, Any]:
             f"sc.exe start {service_name}",
         )
 
-    endpoint = str(config.get("cloudflared_metrics") or "") or info.get("metrics_flag")
-    endpoint_source = "config/flag"
-    if not endpoint and info.get("pid"):
-        endpoint = _listening_endpoint(int(info["pid"]))
-        endpoint_source = "netstat scan"
+    endpoint, endpoint_source = metrics_endpoint(config, info)
     detail["metrics"] = endpoint
     detail["metrics_source"] = endpoint_source if endpoint else None
 
@@ -368,7 +293,7 @@ def check_tunnel(config: dict) -> dict[str, Any]:
 
     expected = int(config.get("expected_ready_connections", 4))
     try:
-        ready = _http_json(endpoint, "/ready")
+        ready = http_json(endpoint, "/ready")
         detail["ready"] = ready
         count = int(ready.get("readyConnections") or 0)
         detail["ready_connections"] = count
@@ -387,7 +312,7 @@ def check_tunnel(config: dict) -> dict[str, Any]:
         notes.append(f"metrics /ready failed: {exc!r}")
 
     try:
-        diag = _http_json(endpoint, "/diag/tunnel")
+        diag = http_json(endpoint, "/diag/tunnel")
         edges = [c.get("edgeAddress") for c in diag.get("connections") or []]
         detail["edge_addresses"] = edges
         detail["tunnel_id"] = diag.get("tunnelID")

@@ -16,13 +16,22 @@ from check_mcp import measure_mcp
 from cloudflared_follow import (
     argotunnel_leaf_nodes,
     detect_follow_reason,
+    plan_tunnel_recovery,
     resolve_follow_target,
     restart_service_with_timeout,
     select_argotunnel_connections,
     stabilize_tun_state,
 )
+from cloudflared_service import wait_for_ready
 from config_loader import LOG_PATH, STATUS_PATH, load_config
-from mihomo_api import auto_group_state, connections, delete_connection, group_delay, version
+from mihomo_api import (
+    auto_group_state,
+    connections,
+    delete_connection,
+    group_delay,
+    select_proxy,
+    version,
+)
 
 _wmi = None
 _last_reselect_monotonic = 0.0
@@ -225,6 +234,86 @@ def restart_cloudflared_follow(config: dict, reason: str) -> dict[str, object]:
         time.sleep(settle_seconds)
     log_event("cloudflared_service_restart_end", reason=reason, service=service_name, **result)
     return result
+
+
+def verify_tunnel_after_restart(
+    config: dict,
+    api: dict[str, Any],
+    *,
+    reason: str,
+    previous_node: str | None,
+    current_node: str | None,
+    blocked_nodes: set[str],
+) -> tuple[str, int, dict[str, Any]]:
+    """Confirm the tunnel actually registered, and undo the node change if not.
+
+    A Cloudflared service in state `Running` only means the process started. If
+    it never registers with the Cloudflare edge the public hostname serves 1033
+    and the outage is total, silent, and indistinguishable from success in the
+    log. Follow mode never picks nodes, but restoring the last node proven to
+    carry the tunnel is not picking one: it is undoing a change that broke it.
+
+    A node that has already been rolled back once is not rolled back again, so a
+    deliberate second attempt by the operator is left alone and merely reported.
+    """
+    timeout = float(config.get("tunnel_ready_timeout_seconds", 45))
+    ready, endpoint = wait_for_ready(config, timeout)
+    group_name = str(api.get("group_name") or "")
+    outcome = plan_tunnel_recovery(
+        ready_connections=ready,
+        previous_node=previous_node,
+        current_node=current_node,
+        rollback_enabled=bool(config.get("tunnel_rollback_enabled", True)),
+        can_reselect=bool(group_name) and str(current_node or "") not in blocked_nodes,
+    )
+    log_event(
+        "tunnel_ready_check",
+        "INFO" if outcome == "healthy" else "WARN",
+        reason=reason,
+        node=current_node,
+        ready_connections=ready,
+        metrics=endpoint,
+        outcome=outcome,
+    )
+    if outcome != "rollback":
+        return outcome, ready, api
+
+    log_event(
+        "tunnel_node_rollback_start",
+        "WARN",
+        reason=reason,
+        group=group_name,
+        failed_node=current_node,
+        restoring_node=previous_node,
+    )
+    pipe = str(config.get("mihomo_pipe") or r"\\.\pipe\verge-mihomo")
+    try:
+        select_proxy(group_name, str(previous_node), pipe=pipe)
+    except Exception as exc:
+        log_event(
+            "tunnel_node_rollback_failed",
+            "ERROR",
+            reason=reason,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return "degraded", ready, api
+
+    blocked_nodes.add(str(current_node or ""))
+    time.sleep(max(0, int(config.get("cloudflared_follow_settle_seconds", 5))))
+    restart_cloudflared_follow(config, f"{reason}:tunnel_rollback")
+    ready, endpoint = wait_for_ready(config, timeout)
+    api = follow_api_state(config)
+    recovered = ready > 0
+    log_event(
+        "tunnel_node_rollback_end",
+        "WARN" if recovered else "ERROR",
+        reason=reason,
+        failed_node=current_node,
+        restored_node=api.get("selected_node"),
+        ready_connections=ready,
+        recovered=recovered,
+    )
+    return ("rolled_back" if recovered else "degraded"), ready, api
 
 
 def api_state(config: dict) -> dict[str, Any]:
@@ -787,6 +876,13 @@ def run_cloudflared_follow_watch() -> int:
     last_node = api.get("selected_node") if api.get("available") else None
     write_status(config, follow_phase(tun=last_tun, pid=last_pid, api=api), "watcher_start", None, api)
 
+    # Establish which node is currently proven to carry the tunnel, so a later
+    # node change that kills it has something known-good to be undone to.
+    blocked_nodes: set[str] = set()
+    startup_ready, _ = wait_for_ready(config, 0)
+    last_healthy_node = last_node if startup_ready > 0 else None
+    log_event("tunnel_ready_baseline", ready_connections=startup_ready, node=last_healthy_node)
+
     if bool(config.get("cloudflared_boot_recovery_enabled", True)) and last_tun and last_pid:
         delay = max(0, int(config.get("cloudflared_boot_recovery_delay_seconds", 60)))
         log_event("cloudflared_boot_recovery_start", delay_seconds=delay)
@@ -882,7 +978,27 @@ def run_cloudflared_follow_watch() -> int:
                 )
                 restart_cloudflared_follow(config, reason)
                 api = follow_api_state(config) if current_pid else api
-                write_status(config, follow_phase(tun=current_tun, pid=current_pid, api=api), reason, None, api)
+                outcome, ready, api = verify_tunnel_after_restart(
+                    config,
+                    api,
+                    reason=reason,
+                    previous_node=last_healthy_node,
+                    current_node=current_node,
+                    blocked_nodes=blocked_nodes,
+                )
+                if outcome == "healthy":
+                    last_healthy_node = current_node or last_healthy_node
+                elif outcome == "rolled_back":
+                    current_node = api.get("selected_node") or last_healthy_node
+                phase = follow_phase(tun=current_tun, pid=current_pid, api=api)
+                error = ""
+                if outcome == "degraded":
+                    phase = "degraded"
+                    error = (
+                        f"Cloudflared has no ready connection through {current_node!r}; "
+                        "the public hostname will return 1033 until a working node is selected"
+                    )
+                write_status(config, phase, reason, None, api, error)
             else:
                 write_status(config, follow_phase(tun=current_tun, pid=current_pid, api=api), "idle", None, api)
 

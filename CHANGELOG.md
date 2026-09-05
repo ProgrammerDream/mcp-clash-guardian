@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### v2.3.2-tunnel-verification
+
+- The watcher now verifies that Cloudflared actually registered with the Cloudflare edge after it restarts, instead of treating a `Running` service as success. A connector that starts but never registers serves `530`/`1033` on the public hostname, and that outage was previously invisible: the log recorded a clean restart and `phase` stayed `monitoring`.
+- If the tunnel does not come back and a previously-proven node exists, that node is restored and the tunnel is rebuilt on it. This restores, it never optimizes: the node chosen is always one already observed carrying the tunnel. A node rolled back once is not rolled back again, so a deliberate second attempt is reported rather than fought over. `tunnel_rollback_enabled` turns it off.
+- When nothing can be restored, `phase` becomes `degraded` and `last_error` names the node and the expected 1033.
+- Added `src/cloudflared_service.py`, so the watcher and the doctor share one implementation of service inspection, metrics-endpoint discovery and connector readiness rather than keeping parallel copies.
+- `doctor` L2 now also reports `protocol_flag`, so the configured edge transport is visible next to the observed one.
+- New tracked defaults: `tunnel_ready_timeout_seconds`, `tunnel_rollback_enabled`.
+
 ### v2.3.1-observability
 
 - Added `python control.py doctor`: a read-only, five-layer diagnosis (exit, tunnel, origin, edge, guardian) that names the first failing layer instead of leaving the operator to probe each hop by hand. `--json` for machine-readable output; exit code `2` when any layer fails.
