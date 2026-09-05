@@ -325,7 +325,9 @@ def run_doctor_action(as_json: bool = False) -> int:
         config["local_config_error"] = str(exc)
     report = run_doctor(config)
     if as_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        # Node names carry emoji, so this has to go through the same
+        # code-page-safe writer as the text report.
+        print_line(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print_report(report)
     return 2 if report["verdict"] == FAIL else 0

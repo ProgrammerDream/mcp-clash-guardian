@@ -198,6 +198,13 @@ def check_exit(config: dict) -> dict[str, Any]:
         )
         chain_nodes = argotunnel_leaf_nodes(tunnel_items)
         detail["tunnel_chain_nodes"] = chain_nodes
+        # UDP/7844 is QUIC, TCP/7844 is the http2 transport. This is the only
+        # place the actual negotiated transport is observable from outside
+        # Cloudflared, and it is what confirms a --protocol change took effect.
+        transports = {str((item.get("metadata") or {}).get("network") or "").lower() for item in tunnel_items}
+        detail["tunnel_transport"] = sorted(
+            {"udp": "quic", "tcp": "http2"}.get(name, name) for name in transports if name
+        )
         distinct = sorted(set(chain_nodes))
         if len(distinct) > 1:
             notes.append("the tunnel is straddling more than one exit node: " + ", ".join(distinct))
